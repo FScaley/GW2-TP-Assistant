@@ -14,6 +14,8 @@ void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& 
     m_pendingAlerts.clear();
 
     m_pnlTracker.LoadLocal(m_dataDir + "\\pnl_data.json");
+    m_prevBooks.clear();
+    m_volume.Load(m_dataDir + "\\volume_history.json");
 
     m_thread = std::thread(&Worker::Run, this);
 }
@@ -118,6 +120,32 @@ void Worker::PollOnce() {
     bool booksOk = m_api->IsLastRequestOk();
     WatchlistSnapshot prev = GetSnapshot();
 
+    // Volume: diff each ladder against the previous successful poll. On a listings failure the
+    // previous ladder is left untouched; the next success spans the gap and the gap rule decides.
+    auto wallNow = std::chrono::system_clock::now();
+    int64_t epochHour = std::chrono::duration_cast<std::chrono::hours>(wallNow.time_since_epoch()).count();
+    if (booksOk) {
+        int pollSec = m_config->GetPollIntervalSec();
+        for (auto& ob : books) {
+            auto it = m_prevBooks.find(ob.itemId);
+            if (it != m_prevBooks.end()) {
+                int dt = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(wallNow - it->second.at).count());
+                if (VolumeTracker::AcceptInterval(dt, pollSec)) {
+                    auto bought = VolumeTracker::ComputeDelta(it->second.buys, ob.buys, true);
+                    auto sold   = VolumeTracker::ComputeDelta(it->second.sells, ob.sells, false);
+                    m_volume.Record(ob.itemId, epochHour, bought, sold, dt);
+                }
+            }
+            m_prevBooks[ob.itemId] = { ob.buys, ob.sells, wallNow };
+        }
+        for (auto it = m_prevBooks.begin(); it != m_prevBooks.end();) {
+            if (std::find(ids.begin(), ids.end(), it->first) == ids.end()) it = m_prevBooks.erase(it);
+            else ++it;
+        }
+        m_volume.Prune(epochHour);
+        m_volume.Save(m_dataDir + "\\volume_history.json");
+    }
+
     // Resolve placeholder names
     std::vector<int> unresolvedIds;
     for (auto& wi : watchlist) {
@@ -176,6 +204,30 @@ void Worker::PollOnce() {
                             entry.bookStale = true;
                             break;
                         }
+                    }
+                }
+
+                // Derived velocity. A measured zero on either side is a first-class state
+                // (volNoFill), never a division — that is the Radiant signal this exists for.
+                entry.vol = m_volume.Estimate(wi.id, epochHour);
+                if (entry.vol.ok && entry.orderQty > 0) {
+                    double bph = entry.vol.boughtPerDay / 24.0;
+                    double sph = entry.vol.soldPerDay / 24.0;
+                    entry.volNoFillBuy = bph <= 0.0;
+                    entry.volNoFillSell = sph <= 0.0;
+                    entry.volNoFill = entry.volNoFillBuy || entry.volNoFillSell;
+                    if (bph > 0.0) {
+                        entry.fillHours = entry.orderQty / bph;
+                        entry.fillHoursQueued = (entry.book.buyQtyAtTop + entry.orderQty) / bph;
+                    }
+                    if (sph > 0.0) {
+                        entry.sellHours = entry.orderQty / sph;
+                        entry.sharePct = entry.orderQty * 100.0 / entry.vol.soldPerDay;
+                    }
+                    if (!entry.volNoFill) {
+                        entry.cycleHours = entry.fillHours + entry.sellHours;
+                        if (entry.cycleHours > 0.0)
+                            entry.profitPerDay = static_cast<int>(entry.profitPerOrder * 24.0 / entry.cycleHours);
                     }
                 }
 

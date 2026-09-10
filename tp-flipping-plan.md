@@ -407,7 +407,7 @@ crafting calculator ile hesapla, ~1-3g/gün kâr ile karşılaştır.
 
 ### Faz 5: Ek Özellikler
 - [ ] Salvage kâr hesaplayıcı
-- [ ] Fiyat geçmişi + hacim tahmini (lokal depolama, listings farkından Sold/Bought proxy, grafik)
+- [ ] Hacim tahmini → **Faz 5b** (aşağıda); fiyat geçmişi grafiği sonraya
 - [ ] Türkçe UI (ana dil)
 
 #### Faz 5a: Emir Defteri Derinliği ✅ (10 Eyl 2026)
@@ -478,3 +478,96 @@ Entry: bool hasBook, bookStale; BookStats book; vector<BookLevel> buyTop, sellTo
 - [x] Undercut unitsBelow
 - [x] test_worker [3b] genişletme
 - [ ] Oyun içi doğrulama (kullanıcı): DLL kopyala → Talep hücresine hover → merdiven görünmeli
+
+#### Faz 5b: Hacim Tahmini — Bought/Sold Proxy ✅ kod tamam (10 Eyl 2026), oyun içi veri birikimi bekliyor
+**Neden:** Araştırmanın tüm sıralaması GW2BLTC'nin günlük Bought/Sold sayılarına dayandı; API bunu
+vermiyor. Radiant tuzağı (Bought 2/gün) yalnızca dış siteden görülebiliyordu. Faz 5a defteri **anlık**
+gösteriyor; 5b **zaman içindeki değişimden** doluş hızını türetir → "emrim kaç saatte dolar, devir kaç
+gün, kâr/gün ne?" sorusu addon içinde, GW2BLTC'ye bakmadan cevaplanır. Bu, araştırmadaki
+"kâr/emir × devir" hedef metriğini ölçülebilir kılar.
+
+**Yöntem (GW2BLTC ile aynı aile — sayılar karşılaştırılabilir):** ardışık iki listings snapshot'ı fiyat
+kademesi bazında karşılaştır (kademe anahtarı = unit_price; API zaten fiyata göre toplar).
+- **Bought** (alış emirleri dolduruluyor) = önceki snapshot'ın **alış** kademelerinde azalan adet toplamı,
+  yalnızca önceki en iyi alışın %5 bandında (derin emir iptalleri sayılmasın; anlık satan en iyi alışa vurur,
+  bitince bir alt kademeye kayar — bant bunu kapsar).
+- **Sold** (listeler satın alınıyor) = önceki **satış** kademelerinde azalan adet toplamı, önceki en iyi
+  satışın %5 bandında.
+- Artışlar sayılmaz. İptal ve relist, dolumdan ayrılamaz → **üst sınır tahmini**; UI'da "≈" ve tooltip'te
+  açıkça yazılır. Tuzak tespiti için üst sınırın bile düşük çıkması yeterli kanıt (Radiant).
+- Aralık dt > max(15 dk, 3×poll) ise (oyun kapalıydı, uyku) delta **ve** zaman atılır.
+- API cache aynı veriyi döndürürse sıfır delta + dt sayılır; uzun vadede ortalama doğru.
+- Sınır: yalnızca oyun açıkken veri toplanır → tahmin "benim oynadığım saatlerin" hızıdır (tooltip'te not).
+
+**Veri modeli:** `modules/VolumeTracker` — item başına saatlik kova `{epochHour, bought, sold, observedSec}`,
+son 168 saat (7 gün), `volume_history.json` (addon dizini, temp+rename ile atomik yazım, her poll).
+Worker bellekte item başına son tam merdiven + steady_clock zamanı tutar (snapshot'a girmez; 17 item ×
+~100 kademe = önemsiz). `Estimate(itemId)` → `{boughtPerDay, soldPerDay, observedSec, ok}`;
+ok = observedSec ≥ 2 sa; 2–6 sa "düşük güven" (soluk), ≥ 6 sa normal.
+
+**Türetilenler (Entry):**
+- `fillHours = orderQty / (boughtPerDay/24)` — +1c teklifle kuyruk atlanır varsayımı; tooltip'te
+  kuyruklu varyant `(buyQtyAtTop + orderQty) / saatlik`.
+- `sellHours = orderQty / (soldPerDay/24)` (top −1c listeleme varsayımı).
+- `cycleHours = fill + sell`; `profitPerDay = profitPerOrder × 24 / cycleHours` (sermaye slotu başına).
+- `sharePct = orderQty / soldPerDay` — günlük hacimdeki payım; eski "%10 emilim" varsayımı artık ölçülür.
+
+**UI:** 11. sütun **Devir** ("~5 sa" / "~2.3 gün" / "—"), renk < 24 sa yeşil, < 72 sa sarı, üstü kırmızı;
+sıralanabilir (veri yoksa sona). Tooltip: alış ≈ X sa (≈B/gün alınıyor) · satış ≈ Y sa (≈S/gün satılıyor) ·
+pay %Z · kâr/gün ≈ G · veri N sa · "relist/iptal dahil, üst sınır". Pencere max genişliği 950 → 1150;
+tablo `Hideable` (başlığa sağ tık → ROI/Kar gizlenebilir). **Durum:** hacim verisi varsa fiyat-heuristiği
+(`BuySideRisky`) yerine ölçüm: fillHours > 7 gün → ALIM RISKLI (ölçülen, tahmini ezer).
+
+**DÜZELTME (advisor, tasarım incelemesi):**
+1. **Durum ezme kuralı tehlikeliydi:** 2 sa veride tek 20'lik dolum → 240/gün ekstrapolasyonu → Radiant
+   "güvenli" görünür ve bugün onu yakalayan fiyat-heuristiği susturulurdu. Yeni kural: ölçüm riski **her
+   güvende ekleyebilir** (fillHours > 7 gün ya da DOLMUYOR → ALIM RISKLI), heuristiğin bayrağını **yalnızca
+   ≥ 6 sa** veride kaldırabilir. 2–6 sa arası: riskli = heuristik ∨ ölçüm.
+2. **"Ölçülen sıfır" ≠ "veri yok":** 6 saatte 0 dolum bu fazın üreteceği en güçlü sinyal; ayrıca
+   `fillHours` sıfıra bölünürdü. Üç durum: `!ok` → "—" gri ("N sa veri, 2 sa gerekli"); `ok ∧ hız=0` →
+   **DOLMUYOR** kırmızı ("N saatte 0 dolum", hangi taraf); `ok ∧ hız>0` → "~X sa". Sıralama artan: sonlu →
+   DOLMUYOR → veri yok. Sıfır-hız yolu unit testte.
+3. **dt için `system_clock`**, steady_clock değil: MSVC steady_clock = QPC; S3 uykuda davranışı garanti
+   değil — 3 saatlik uyku "5 dk" okunursa 3 saatlik işlem 5 dakikaya yazılırdı. system_clock + gap kuralı
+   hem uykuyu hem saat ayarını yakalar (saat sıçraması = 1 atılan delta). Snapshot timestamp steady kalır.
+4. **Bias yönü etiketlenir:** relist Sold'u, +1c savaşı Bought'u şişirir → hacim **üst sınır**, dolayısıyla
+   Devir **iyimser (alt sınır)**, kâr/gün **üst sınır**. Tooltip: "en iyi ihtimalle — relist/iptal dolum
+   sayılır". "GW2BLTC ile karşılaştırılabilir" → "aynı yöntem ailesi; %5 bant nedeniyle bizimki ≤ GW2BLTC".
+   Nüans: "üst sınır" **ince defterlerde** geçerli (tuzak vakası). Likit item'larda aynı 5 dk aralığında
+   300 dolup 300 yenilenen kademe sıfıra netleşir → orada tahmin **kabaca hacim**, yönü sabit değil.
+5. **`listings` sayacı bedava sinyal:** GW2'de emir kısmen iptal edilemez → kademede adet düştü ama
+   `listings` aynıysa bu **dolum** (iptal/relist her zaman listings'i düşürür). ComputeDelta iki sayı döndürür:
+   `confirmed` (Σ adet↓, listings değişmemiş) ve `total` (üst sınır). Kovada ikisi de saklanır; tooltip
+   "onaylı ≥X/gün · üst sınır Y/gün". Uyarı: aynı kademede iptal(−100, L−1) + yeni emir(+50, L+1) çakışması
+   50'lik sahte onaylı dolum gibi görünür → güçlü alt tahmin, kanıt değil. Emri tamamen bitiren dolum da
+   listings'i düşürür → onaylı sayı yalnızca kısmi dolumları yakalar (bu yüzden "≥").
+
+**Uygulama notları (advisor):** Durum sütunu no-market dalında açık `TableNextColumn` çağrıları ve
+`!hasData` dalında `i < 7` döngüsü 10 sütuna sabit → Devir (indeks 8) eklenince ikisi de güncellenir;
+sıralama indeksleri 0–7 geçerli kalır, Devir = case 8. `!booksOk` yolunda prev merdiven **güncellenmez**,
+delta hesaplanmaz; sonraki başarılı poll'un dt'si boşluğu kapsar, gap kuralı karar verir. Kova ataması:
+delta'nın sayıları **ve** dt'si o poll'un epoch saatine yazılır, bölünmez; Estimate aynı kova kümesi
+üzerinden toplar → oran çarpılamaz.
+
+**Test:** `test_volume.cpp` — ComputeDelta: top kısmi tüketim (confirmed), kademe kayboldu + alt kademe
+kısmi ({100×50, 99×200} → {99×150} = **100** total, 50 confirmed), yeni yüksek top + artışlar → 0,
+bant dışı azalma → 0, satış tarafı bant yönü, boş taraflar, listings değişti → confirmed 0;
+Estimate: < 2 sa → ok=false, 6 sa'da 12 bought → 48/gün, **6 sa 0 dolum → ok ∧ 0**; gap kuralı;
+Save/Load roundtrip; 168 sa budama. `test_worker`: 2. poll sonrası observedSec > 0, history dosyası var.
+
+**Test sonuçları (10 Eyl 2026):**
+- `test_volume` 13/13: kısmi dolum onaylı ✓, kademe kayboldu 100/50 ✓, yeni top/artış 0 ✓, bant dışı 0 ✓,
+  satış bandı ✓, boş taraflar ✓, listings değişti → onaylı 0 ✓, 6 sa → 48/gün ✓, 1 sa → ok=false ✓,
+  **3 sa 0 dolum → ok ∧ 0** ✓, gap kuralı ✓, 168 sa pencere/budama ✓, save/load + .tmp temizliği ✓.
+- `test_worker` [4b]: 2. poll sonrası 17/17 item'da observedSec > 0, `volume_history.json` yazıldı, .tmp yok,
+  taze geçmişte vol.ok = 0 satır (uydurma tahmin yok). Regresyon (5a defter, ForcePoll, dedup, resolve,
+  remove, Stop 0ms) geçti. `test_pnl` 6/6, `test_book` 6/6 değişmedi.
+- DLL v0.4, 11 sütun (Devir indeks 8), pencere max 1150, tablo Hideable.
+
+- [x] VolumeTracker (saf delta + kovalar + JSON, temp+rename) + test_volume
+- [x] Worker: prev merdiven (system_clock), gap kuralı, Record, Prune, Save; Entry türetilenleri
+- [x] UI: Devir sütunu üç durum (— / DOLMUYOR / ~X) + tooltip, Hideable, genişlik 1150; Durum kuralı
+      (ölçüm riski her güvende ekler, heuristiği yalnızca ≥ 6 sa kaldırır)
+- [x] test_worker [4b] genişletme
+- [ ] Oyun içi: ≥ 2 sa oyun sonrası Devir dolmaya başlar (2–6 sa soluk, ≥ 6 sa normal); Radiant/Opal'i
+      izleme listesine geçici ekleyip DOLMUYOR'un çıktığını gör → yöntemin doğrulaması

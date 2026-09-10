@@ -5,7 +5,10 @@
 #include "BookAnalyzer.h"
 #include "../modules/PnLTracker.h"
 #include "../modules/UndercutDetector.h"
+#include "../modules/VolumeTracker.h"
 #include <vector>
+#include <map>
+#include <cstdint>
 #include <mutex>
 #include <thread>
 #include <atomic>
@@ -35,6 +38,17 @@ struct WatchlistSnapshot {
         BookStats book;
         std::vector<BookLevel> buyTop;   // top 5 levels, display only
         std::vector<BookLevel> sellTop;
+        // Volume estimate from order-book deltas across polls (upper bound: cancels/relists count)
+        VolumeEstimate vol;
+        bool volNoFill = false;         // vol.ok but a side measured ZERO -> "DOLMUYOR"
+        bool volNoFillBuy = false;
+        bool volNoFillSell = false;
+        double fillHours = 0;           // orderQty / hourly bought  (+1c bid skips the queue)
+        double fillHoursQueued = 0;     // (buyQtyAtTop + orderQty) / hourly bought
+        double sellHours = 0;           // orderQty / hourly sold    (list at top -1c)
+        double cycleHours = 0;          // fill + sell; optimistic (lower bound on time)
+        int profitPerDay = 0;           // profitPerOrder * 24 / cycleHours; upper bound, per capital slot
+        double sharePct = 0;            // orderQty as % of daily sold volume
     };
     std::vector<Entry> entries;
     std::chrono::steady_clock::time_point timestamp;
@@ -88,6 +102,15 @@ private:
     bool m_firstPoll = true;
 
     PnLTracker m_pnlTracker;
+
+    // Previous full ladder per item, worker-thread only (never in the snapshot).
+    // system_clock on purpose: a suspend/clock jump becomes one discarded interval via the gap rule.
+    struct PrevBook {
+        std::vector<BookLevel> buys, sells;
+        std::chrono::system_clock::time_point at;
+    };
+    std::map<int, PrevBook> m_prevBooks;
+    VolumeTracker m_volume;
 
     static constexpr double ALERT_THRESHOLD = 20.0;
     static constexpr double ALERT_RESET = 10.0;

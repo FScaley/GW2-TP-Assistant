@@ -26,10 +26,13 @@ config.json
 settings.json
 test_config.json
 
-# Local data
+# Local data (test_worker writes these into the repo root with dataDir ".")
 *.db
 *.sqlite
 price_history/
+pnl_data.json
+volume_history.json
+volume_history.json.tmp
 
 # Dependencies (download locally)
 vendor/

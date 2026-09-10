@@ -8,6 +8,7 @@
 #include <chrono>
 #include <thread>
 #include <functional>
+#include <filesystem>
 
 // Poll a condition instead of sleeping a fixed time — API latency varies, fixed sleeps flake.
 static bool WaitFor(std::function<bool()> cond, int timeoutMs = 15000) {
@@ -74,9 +75,32 @@ int main() {
     // --- Faz 2: ForcePoll test ---
     std::cout << "\n[4] ForcePoll test...\n";
     auto ts1 = worker.GetSnapshot().timestamp;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));   // dt >= 1s so the volume interval is accepted
     worker.ForcePoll();
     bool forcePollWorked = WaitFor([&] { return worker.GetSnapshot().timestamp > ts1; });
     std::cout << "  Timestamp advanced: " << (forcePollWorked ? "YES [OK]" : "NO [FAIL]") << "\n";
+
+    // --- Faz 5b: volume tracking after a second poll ---
+    std::cout << "\n[4b] Volume tracking...\n";
+    {
+        auto s2 = worker.GetSnapshot();
+        int observed = 0, withBook = 0;
+        for (auto& e : s2.entries) {
+            if (!e.hasBook) continue;
+            withBook++;
+            if (e.vol.observedSec > 0) observed++;
+        }
+        bool fileExists = std::filesystem::exists("volume_history.json");
+        bool noTmp = !std::filesystem::exists("volume_history.json.tmp");
+        std::cout << "  observedSec>0: " << observed << "/" << withBook
+                  << "  history file: " << (fileExists ? "yes" : "NO")
+                  << "  tmp cleaned: " << (noTmp ? "yes" : "NO")
+                  << ((observed > 0 && observed == withBook && fileExists && noTmp) ? " [OK]" : " [FAIL]") << "\n";
+        // Under 2h of data every row must be in the "--" state: never a fabricated estimate
+        int okCount = 0;
+        for (auto& e : s2.entries) if (e.vol.ok) okCount++;
+        std::cout << "  vol.ok rows (expect 0 on a fresh history): " << okCount << (okCount == 0 ? " [OK]" : " [WARN: stale history file]") << "\n";
+    }
 
     // --- Faz 2: Alert dedup test ---
     std::cout << "\n[5] Alert dedup test...\n";

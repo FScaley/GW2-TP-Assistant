@@ -51,7 +51,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 3;
+    AddonDef.Version.Minor = 4;
     AddonDef.Version.Build = 0;
     AddonDef.Version.Revision = 1;
     AddonDef.Author = "Onur";
@@ -98,7 +98,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->GUI_Register(RT_Render, AddonRender);
     APIDefs->GUI_Register(RT_OptionsRender, AddonOptions);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.3 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.4 loaded.");
 }
 
 void AddonUnload() {
@@ -195,6 +195,21 @@ static std::string FormatQty(int qty) {
     return std::to_string(qty);
 }
 
+static std::string FormatHours(double h) {
+    char buf[32];
+    if (h < 1.0)       snprintf(buf, sizeof(buf), "~%d dk", (int)(h * 60.0 + 0.5));
+    else if (h < 48.0) snprintf(buf, sizeof(buf), "~%.0f sa", h);
+    else               snprintf(buf, sizeof(buf), "~%.1f gun", h / 24.0);
+    return buf;
+}
+
+// Sort key for the Devir column: finite estimates first, then measured-zero, then no data.
+static double DevirSortKey(const WatchlistSnapshot::Entry& e) {
+    if (!e.vol.ok) return 1e12;
+    if (e.volNoFill) return 1e11;
+    return e.cycleHours;
+}
+
 static bool g_hideNoMarket = true;
 static bool g_hideLowProfit = true;
 
@@ -216,7 +231,7 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Kar/Emir = birim kar x min(250, emir sermayesi / alis)\n"
                           "Esik ve emir sermayesi Nexus ayarlarinda.\n"
-                          "Gunluk hacim (Sold/Bought) API'de yok — GW2BLTC'den kontrol et.");
+                          "Devir = olculen hacimden emir dolus + satis suresi (>= 2 sa veri, oyun acikken).");
     ImGui::SameLine();
     ImGui::TextDisabled("(esik %s, %d gizli)", ProfitEngine::FormatCopper(minPPO).c_str(), lowProfitCount);
     if (noMarketCount > 0) {
@@ -226,9 +241,9 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
         ImGui::TextDisabled("(%d)", noMarketCount);
     }
 
-    if (ImGui::BeginTable("##watchlist", 10,
+    if (ImGui::BeginTable("##watchlist", 11,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-        ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingStretchProp))
+        ImGuiTableFlags_Sortable | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingStretchProp))
     {
         ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_PreferSortDescending, 3.0f);
         ImGui::TableSetupColumn("Alis", ImGuiTableColumnFlags_NoSort, 1.0f);
@@ -238,6 +253,7 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
         ImGui::TableSetupColumn("Kar/Emir", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_DefaultSort, 1.2f);
         ImGui::TableSetupColumn("Talep", ImGuiTableColumnFlags_PreferSortDescending, 0.8f);
         ImGui::TableSetupColumn("Arz", ImGuiTableColumnFlags_PreferSortDescending, 0.8f);
+        ImGui::TableSetupColumn("Devir", ImGuiTableColumnFlags_PreferSortAscending, 0.9f);
         ImGui::TableSetupColumn("Durum", ImGuiTableColumnFlags_NoSort, 1.1f);
         ImGui::TableSetupColumn("##sil", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoResize, 0.3f);
         ImGui::TableHeadersRow();
@@ -260,6 +276,7 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
                             case 5: cmp = (a.profitPerOrder > b.profitPerOrder) - (a.profitPerOrder < b.profitPerOrder); break;
                             case 6: cmp = (a.price.buyQty > b.price.buyQty) - (a.price.buyQty < b.price.buyQty); break;
                             case 7: cmp = (a.price.sellQty > b.price.sellQty) - (a.price.sellQty < b.price.sellQty); break;
+                            case 8: { double ka = DevirSortKey(a), kb = DevirSortKey(b); cmp = (ka > kb) - (ka < kb); break; }
                             default: return false;
                         }
                         return asc ? cmp < 0 : cmp > 0;
@@ -291,6 +308,7 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
                 ImGui::TableNextColumn(); ImGui::TextDisabled("--");
                 ImGui::TableNextColumn(); ImGui::TextDisabled("%s", FormatQty(e.price.buyQty).c_str());
                 ImGui::TableNextColumn(); ImGui::TextDisabled("%s", FormatQty(e.price.sellQty).c_str());
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");   // Devir
                 ImGui::TableNextColumn();
                 ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
                     e.price.sellQty == 0 ? "ARZ YOK" : "TALEP YOK");
@@ -301,7 +319,7 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
             }
 
             if (!e.hasData) {
-                for (int i = 0; i < 7; ++i) { ImGui::TableNextColumn(); ImGui::TextDisabled("--"); }
+                for (int i = 0; i < 8; ++i) { ImGui::TableNextColumn(); ImGui::TextDisabled("--"); }
                 ImGui::TableNextColumn(); ImGui::TextDisabled("Veri yok");
                 ImGui::TableNextColumn();
                 if (ImGui::SmallButton("X")) g_removeItemId = e.itemId;
@@ -387,15 +405,74 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
                 ImGui::TextColored(supplyCol, "%s", FormatQty(e.price.sellQty).c_str());
             }
 
+            // Devir — measured round trip: buy order fills + listing sells. Three states, never a
+            // silent zero: no data / measured ZERO (the trap signal) / estimate.
+            ImGui::TableNextColumn();
+            double dataHours = e.vol.observedSec / 3600.0;
+            if (!e.vol.ok) {
+                ImGui::TextDisabled("--");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Hacim verisi %.1f sa (2 sa gerekli).\n"
+                                      "Oyun acikken defter degisiminden olculur; Nexus kapaliyken birikmez.", dataHours);
+            } else if (e.volNoFill) {
+                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f), "DOLMUYOR");
+                if (ImGui::IsItemHovered()) {
+                    std::string sides = e.volNoFillBuy ? "alis emirleri dolmuyor" : "";
+                    if (e.volNoFillSell) { if (!sides.empty()) sides += " + "; sides += "satis listeleri satilmiyor"; }
+                    ImGui::SetTooltip("%.1f saatte 0 dolum: %s\n"
+                                      "Ust sinir sayimi bile sifir — bu spread hayalet, emir bekler.",
+                                      dataHours, sides.c_str());
+                }
+            } else {
+                ImVec4 dCol = e.cycleHours < 24.0 ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)
+                            : e.cycleHours < 72.0 ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)
+                                                  : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);
+                if (!e.vol.confident) dCol.w = 0.6f;
+                ImGui::TextColored(dCol, "%s", FormatHours(e.cycleHours).c_str());
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("Devir %s — en iyi ihtimalle (relist/iptal dolum sayilir)", FormatHours(e.cycleHours).c_str());
+                    ImGui::Separator();
+                    ImGui::Text("Alis emri %s  (~%.0f/gun aliniyor, onayli >= %.0f/gun)",
+                                FormatHours(e.fillHours).c_str(), e.vol.boughtPerDay, e.vol.boughtConfirmedPerDay);
+                    ImGui::TextDisabled("  kuyrugun arkasina girersen: %s", FormatHours(e.fillHoursQueued).c_str());
+                    ImGui::Text("Satis     %s  (~%.0f/gun satiliyor, onayli >= %.0f/gun)",
+                                FormatHours(e.sellHours).c_str(), e.vol.soldPerDay, e.vol.soldConfirmedPerDay);
+                    ImGui::Text("Payim: %d adetlik emir gunluk satisin %%%.0f'i", e.orderQty, e.sharePct);
+                    ImGui::Text("Kar/gun ~%s (ust sinir, sermaye slotu basina)", ProfitEngine::FormatCopper(e.profitPerDay).c_str());
+                    ImGui::Separator();
+                    if (e.vol.confident)
+                        ImGui::TextDisabled("Veri: %.1f sa (oyun acikken)", dataHours);
+                    else
+                        ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1.0f), "Veri: %.1f sa — DUSUK GUVEN (6 sa altinda)", dataHours);
+                    ImGui::EndTooltip();
+                }
+            }
+
+            // Durum. Measurement may ADD buy-side risk at any confidence, but may only REMOVE the
+            // price heuristic's flag with >= 6h of data — two hours of noise must not unflag Radiant.
+            bool measuredRisky = e.vol.ok && (e.volNoFillBuy || e.fillHours > 168.0);
+            bool measuredSafe  = e.vol.confident && !e.volNoFillBuy && e.fillHours > 0.0 && e.fillHours <= 168.0;
+            bool buyRisky = measuredRisky || (BuySideRisky(e.price) && !measuredSafe);
+
             ImGui::TableNextColumn();
             if (e.flip.roi <= 0.0)
                 ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f), "ZARAR");
-            else if (BuySideRisky(e.price)) {
+            else if (buyRisky) {
                 ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "ALIM RISKLI");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Talep derinligi cok dusuk (%s) — alis emri dolmayabilir.\n"
-                                      "Genis spread'in sebebi bu olabilir. GW2BLTC'de Bought/gun kontrol et.",
-                                      FormatQty(e.price.buyQty).c_str());
+                if (ImGui::IsItemHovered()) {
+                    if (measuredRisky && e.volNoFillBuy)
+                        ImGui::SetTooltip("OLCULDU: %.1f saatte alis emirlerinden 0 birim doldu.\n"
+                                          "Alis emrin muhtemelen hic dolmaz.", dataHours);
+                    else if (measuredRisky)
+                        ImGui::SetTooltip("OLCULDU: %d adetlik alis emri %s'de dolar (7 gunden uzun).",
+                                          e.orderQty, FormatHours(e.fillHours).c_str());
+                    else
+                        ImGui::SetTooltip("Talep derinligi cok dusuk (%s) — alis emri dolmayabilir.\n"
+                                          "Genis spread'in sebebi bu olabilir. Devir sutunu %s.",
+                                          FormatQty(e.price.buyQty).c_str(),
+                                          e.vol.ok ? "henuz 6 sa veriye ulasmadi" : "veri topluyor");
+                }
             }
             else if (e.hasBook && e.book.thinBook) {
                 ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "INCE");
@@ -462,7 +539,7 @@ void AddonRender() {
 
     if (!g_showWindow) return;
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(520, 250), ImVec2(950, 850));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(520, 250), ImVec2(1150, 850));
     if (ImGui::Begin("TP Assistant", &g_showWindow, ImGuiWindowFlags_NoCollapse)) {
         if (ImGui::BeginTabBar("##tabs")) {
 
@@ -671,7 +748,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.3");
+    ImGui::Text("TP Assistant v0.4");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";
