@@ -6,6 +6,7 @@
 #include "../modules/PnLTracker.h"
 #include "../modules/OrderTracker.h"
 #include "../modules/VolumeTracker.h"
+#include "../modules/CraftingCalc.h"
 #include <vector>
 #include <map>
 #include <cstdint>
@@ -77,6 +78,18 @@ public:
     WatchlistSnapshot GetSnapshot() const;
     PnLSummary GetPnLSnapshot() const;
     OrdersSnapshot GetOrdersSnapshot() const;
+
+    struct CraftingSnapshot {
+        std::vector<CostBreakdown> timeGated;     // the 4 daily gated recipes
+        std::vector<CostBreakdown> custom;         // user-added recipes
+        std::chrono::steady_clock::time_point lastRefresh;
+        bool hasData = false;
+        bool stale = false;
+    };
+    CraftingSnapshot GetCraftingSnapshot() const;
+    void RequestCrafting();
+    void RequestCraftingSearch(int outputItemId);   // search + resolve + add to custom list
+
     std::vector<AlertMsg> DrainAlerts();
 
     void SetAlertCallback(AlertCallback cb) { m_alertCb = cb; }
@@ -88,8 +101,9 @@ public:
 private:
     void Run();
     void PollOnce();
-    void DoPnL(bool incremental = false);   // incremental = newest page only, merged by id
+    void DoPnL(bool incremental = false);
     void DoOrders();
+    void DoCrafting();
     void ResolveNames(const std::vector<int>& ids);
 
     GW2ApiClient* m_api = nullptr;
@@ -112,6 +126,8 @@ private:
     std::atomic<bool> m_forcePoll{false};
     std::atomic<bool> m_pnlRequested{false};
     std::atomic<bool> m_ordersRequested{false};
+    std::atomic<bool> m_craftingRequested{false};
+    std::atomic<int> m_craftingSearchId{0};   // output item ID to search + add
     bool m_firstPoll = true;
 
     PnLTracker m_pnlTracker;
@@ -120,6 +136,14 @@ private:
     // Order tracking: persistent seen-id sets + alert dedup keys; worker-thread only.
     OrderState m_orderState;
     std::map<int, std::string> m_nameCache;
+
+    // Crafting: recipe cache (static data), resolved trees, snapshot
+    CraftingSnapshot m_craftingSnapshot;
+    std::vector<RecipeInfo> m_gatedRecipes;          // 4 time-gated tier-1
+    std::vector<RecipeInfo> m_customRecipes;          // user-added
+    std::map<int, RecipeInfo> m_subRecipeCache;       // craftable sub-ingredients
+    std::set<int> m_gatedItemIds;                     // hardcoded + dynamically resolved
+    bool m_recipesResolved = false;
 
     // Previous full ladder per item, worker-thread only (never in the snapshot).
     // system_clock on purpose: a suspend/clock jump becomes one discarded interval via the gap rule.

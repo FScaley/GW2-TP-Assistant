@@ -390,20 +390,122 @@ Bu kuralı bozmak = oyun donması.
 - [x] Undercut alert — Nexus GUI_SendAlert ile bildirim
 - [x] test_pnl.cpp: 6 unit test (basic FIFO, sort, reversed order, unmatched, ignored, merge)
 
-### Faz 4: Crafting Hesaplayıcı (DÜŞÜK ÖNCELİK — şu anda 400+ disiplin yok)
-Crafting disiplinleri yükseltildiğinde devreye girer.
-Not: Time-gated crafting 450+ gerektirir. 0→500 leveling maliyetini gw2efficiency
-crafting calculator ile hesapla, ~1-3g/gün kâr ile karşılaştır.
-- [ ] Normal reçeteler: `/v2/recipes/search` + `/v2/recipes/{id}` ile çözümleme
-- [ ] Malzeme maliyet hesabı (canlı fiyatlarla)
-- [ ] Crafting kâr paneli (ImGui)
-- [ ] Time-gated malzemeler (Deldrimor Steel vb.) — günlük kâr hesabı
-- [ ] Mystic Forge reçeteleri — API'de YOK, hardcode edilmeli:
-  - T5→T6 promotion: 50 T5 + 1 T6 + 5 Dust + 5 Phil. Stone = ort. [gw2lunchbox'tan doğrula] T6
-  - Ecto→Dust: 1 ecto = ort. 1.84 dust
-  - Phil. Stone = spirit shard (TP'de satılmaz) → kullanıcıdan shard değeri iste veya 0 kabul et
-- [ ] Vendor/karma malzemeleri — bilinen vendor fiyatlarını hardcode et (ör. Thermocatalytic Reagent)
-- [ ] Crafting disiplin kontrolü — `/v2/characters/:id/crafting` → `characters` scope (opsiyonel)
+### Faz 4: Crafting Hesaplayıcı (SIRADA)
+
+**Neden:** Kullanıcının 400+ disiplini yok ama "yapmak gerekiyorsa yaparım" dedi. Addon'un
+cevaplamasi gereken soru: "Hangi disiplini kasmalıyım ve günde kaç gold kazanırım?" Time-gated
+günlük craft (ascended malzemeler) GW2'de en istikrarlı altin kazanma yolu (~1-3g/gün/disiplin).
+Yatırım kararı = leveling maliyeti / günlük kâr = kaç günde amorti.
+
+**Kaynak:** `/v2/recipes?ids=…` (auth yok, 200 ID/istek), `/v2/recipes/search?output=ITEM_ID`.
+Reçete yapısı: `{id, output_item_id, output_item_count, min_rating, time_sec (0=normal, >0=time-gated),
+disciplines[], ingredients[{item_id, count}], flags[]}`. Fiyatlar: mevcut `GetPrices`.
+
+**Time-gated ascended malzemeler — 4 tier-1 refinement (hepsi 1/gün, 450 rating):**
+Bunlar asıl kapılı olanlar; tier-2 ürünler (Deldrimor Steel vb.) bunları TÜKETİR ama kendileri kapılı değildir.
+| Tier-1 (kapılı) | Item ID | Disiplinler | → Tier-2 ürün |
+|---|---|---|---|
+| Lump of Mithrillium | 46745 | Armorsmith, Artificer, Huntsman, Weaponsmith | → Deldrimor Steel Ingot (46742) |
+| Spool of Thick Elonian Cord | 46743 | Armorsmith, Huntsman, Leatherworker, Tailor | → Elonian Leather Square (46741) |
+| Spool of Silk Weaving Thread | **TBD** | Armorsmith, Leatherworker, Tailor | → Bolt of Damask (46740) |
+| Glob of Elder Spirit Residue | 46746 | Artificer, Huntsman, Weaponsmith | → Spiritwood Plank (46744) |
+**Jeweler 400'de kalır, 450 reçetesi yok.** Disiplinler reçeteden okunur, hardcode edilmez.
+Malzeme listesi API'den çekilir, ASLA hardcode edilmez — yalnızca çıktı item ID'leri sabit (2013'ten beri).
+
+**DÜZELTME (advisor):**
+1. İlk plan reçete detaylarını bellekten hardcode ediyordu — API bunu vermek için var. Yalnızca 4 kapılı çıktı
+   item ID'si sabit; her şey `/v2/recipes/search?output=ID` + `/v2/recipes?ids=…` ile çekilir.
+2. `time_to_craft_ms` animasyon süresi, kapı değil. `RecipeInfo::timeGated` = hardcoded ID set.
+3. Kapılı malzemeler recursive çözümlemede **açılmaz** (craft seçeneği yok, günde 1): maliyet = TP alış.
+4. Reçete verisi statik → `recipes_cache.json` (atomic yazım), her "Yenile" yalnızca fiyat çeker.
+5. Leveling maliyeti hardcode'lanmaz (15-40g, fiyatlarla değişir). Sadece günlük kâr gösterilir +
+   "gw2efficiency.com/crafting/calculator" linki. Kullanıcı leveling maliyetini girerse amorti hesaplanır.
+6. Account-bound çıktılar: `/v2/items` flags `AccountBound`/`NoSell` → "TP'de satılamaz".
+7. `DoCrafting` API key GEREKTİRMEZ (recipes + prices auth yok) — "hangi disiplini kasmalıyım" sorusu
+   key girmeden cevaplanır.
+
+**Vendor malzemeleri (hardcode):**
+```
+Thermocatalytic Reagent  = 150c  (tüm crafting vendor'larında)
+Lump of Coal             = 16c   (karma vendor / TP, genelde vendor ucuz)
+Jar of Vinegar           = 36c
+Jug of Water             = 8c
+Bag of Starch            = 64c
+Cheese Wedge             = 32c
+Glass Mug                = 8c
+Ball of Dough            = 48c
+```
+Liste büyüyebilir → config'te `vendor_prices` JSON objesi, yeni item'lar kullanıcı ya da güncelleme ile eklenir.
+
+**Reçete çözümleme (recursive craft-vs-buy):**
+Her malzeme için:
+1. TP'de alış fiyatı (`buyPrice` = sabırlı, `sellPrice` = anlık)
+2. Eğer malzeme de craftable ise → alt-reçetenin maliyeti
+3. min(TP alış, craft maliyeti) seçilir
+Bu recursive çözümleme sırasında döngü yakalanmalı (A→B→A); zaten gerçekte yok ama güvenlik.
+Derinlik sınırı: 5 kademe (GW2'de daha derin reçete yok).
+
+**Veri modeli (`modules/CraftingCalc`):**
+```cpp
+struct VendorPrice { int itemId; int copper; std::string name; };
+
+struct RecipeIngredient { int itemId; int count; };
+struct RecipeInfo {
+    int recipeId; int outputItemId; int outputCount;
+    std::vector<RecipeIngredient> ingredients;
+    int minRating; int timeSec;  // 0=normal, 86400=1/gün
+    std::vector<std::string> disciplines;
+};
+
+struct CostBreakdown {
+    struct Line { int itemId; std::string name; int count; int unitCost; bool crafted; bool vendor; };
+    std::vector<Line> lines;
+    int totalCost;          // sum of lines (sabırlı alış)
+    int totalCostInstant;   // sell price ile alım
+    int sellRevenue;        // NetRevenue(sellPrice) * outputCount
+    int profit;             // sellRevenue - totalCost
+    int profitInstant;
+    double roi;
+    bool complete;          // tüm fiyatlar çözümlendi
+};
+
+// Saf fonksiyonlar (Worker'da çağrılır):
+CostBreakdown CalcRecipeCost(
+    const RecipeInfo& recipe,
+    const std::map<int, PriceData>& prices,
+    const std::map<int, RecipeInfo>& subRecipes,   // craftable ingredients
+    const std::map<int, int>& vendorPrices
+);
+```
+
+**UI — "Crafting" sekmesi (4. tab):**
+1. **Günlük Time-Gated** (varsayılan görünüm):
+   Disiplin | Ürün | Maliyet | Satış | **Günlük Kâr** | ROI | 450 Leveling (~) | Amorti
+   Her satır: malzeme ikonları/isimleri tooltip'te; kâr >= 50s yeşil, < 0 kırmızı.
+   **Toplam günlük kâr** (tüm disiplinler) altta.
+   Leveling maliyeti: gw2efficiency referansı (hardcode yaklaşık; Chef ~3g, Tailor ~15g, Armorsmith ~10g vb.
+   — fiyatlar değişir, addon bunu API'den hesaplamaz, yaklaşık gösterir + "gw2efficiency.com/crafting/calculator
+   kullan" tooltip'i).
+
+2. **Reçete Hesaplayıcı** (katlanabilir):
+   Item ID gir → `/v2/recipes/search?output=ID` → reçete(ler) göster → recursive maliyet çözümleme.
+   Birden fazla reçete varsa hepsini listele (farklı disiplinler/yollar).
+   "Craft vs Buy" her malzeme satırında gösterilir.
+
+**Worker entegrasyonu:** `DoCrafting()` poll'da çağrılmaz (ağır — yüzlerce fiyat). Kullanıcı sekmeyi
+açtığında veya "Yenile" tıkladığında `RequestCrafting` → Worker time-gated reçeteleri çözer + fiyatları
+çeker. Custom reçete araması da Worker'da. Sonuç `CraftingSnapshot` olarak snapshot'a.
+
+**Test:** `test_crafting.cpp` — CalcRecipeCost: basit reçete (3 malzeme, hepsi TP), vendor malzeme,
+recursive craft-vs-buy (sub-reçete ucuzsa craft seçilir), recursive buy-vs-craft (TP ucuzsa TP),
+eksik fiyat → complete=false, derinlik sınırı, outputCount > 1 normalizasyon.
+`test_worker`: DoCrafting API key yokken no-op (reçete API auth istemez ama fiyatlar gerekir).
+
+- [ ] VendorPrices + RecipeInfo + CraftingCalc (saf) + test_crafting
+- [ ] GW2ApiClient: GetRecipes(ids), SearchRecipeByOutput(itemId)
+- [ ] Worker: DoCrafting, RequestCrafting, CraftingSnapshot (time-gated + custom)
+- [ ] UI: Crafting sekmesi (time-gated tablo + reçete hesaplayıcı)
+- [ ] test_worker genişletme; sürüm 0.6
 
 ### Faz 5: Ek Özellikler
 - [ ] Salvage kâr hesaplayıcı

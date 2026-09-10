@@ -22,6 +22,16 @@ struct OrderBook {
     std::vector<BookLevel> sells;  // price ascending (best first)
 };
 
+struct RecipeData {
+    int id = 0;
+    int outputItemId = 0;
+    int outputCount = 1;
+    int minRating = 0;
+    std::vector<std::string> disciplines;
+    std::vector<std::pair<int, int>> ingredients;   // {item_id, count}
+    std::vector<std::string> flags;                 // "AutoLearned", "LearnedFromItem"
+};
+
 struct TransactionRecord {
     int64_t id = 0;
     int itemId = 0;
@@ -43,6 +53,10 @@ public:
 
     // Item info (no auth)
     std::vector<ItemInfo> GetItems(const std::vector<int>& itemIds);
+
+    // Recipe endpoints (no auth)
+    std::vector<int> SearchRecipeByOutput(int outputItemId);          // returns recipe IDs
+    std::vector<RecipeData> GetRecipes(const std::vector<int>& recipeIds);  // up to 200
 
     // Transaction endpoints (auth required)
     std::vector<TransactionRecord> GetCurrentSells();

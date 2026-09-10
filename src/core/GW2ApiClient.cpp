@@ -113,6 +113,47 @@ std::vector<ItemInfo> GW2ApiClient::GetItems(const std::vector<int>& itemIds) {
     return result;
 }
 
+std::vector<int> GW2ApiClient::SearchRecipeByOutput(int outputItemId) {
+    std::vector<int> result;
+    std::string path = "/v2/recipes/search?output=" + std::to_string(outputItemId);
+    auto resp = m_http.Get(API_HOST, path);
+    if (!resp || resp->statusCode != 200) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& v : j) result.push_back(v.get<int>());
+    } catch (...) { m_lastOk = false; }
+    return result;
+}
+
+std::vector<RecipeData> GW2ApiClient::GetRecipes(const std::vector<int>& recipeIds) {
+    std::vector<RecipeData> result;
+    if (recipeIds.empty()) return result;
+    std::string path = "/v2/recipes?ids=" + BuildIdsParam(recipeIds);
+    auto resp = m_http.Get(API_HOST, path);
+    if (!resp || (resp->statusCode != 200 && resp->statusCode != 206)) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& r : j) {
+            RecipeData rd;
+            rd.id = r["id"].get<int>();
+            rd.outputItemId = r["output_item_id"].get<int>();
+            rd.outputCount = r.value("output_item_count", 1);
+            rd.minRating = r.value("min_rating", 0);
+            for (auto& d : r.value("disciplines", json::array())) rd.disciplines.push_back(d.get<std::string>());
+            for (auto& f : r.value("flags", json::array())) rd.flags.push_back(f.get<std::string>());
+            for (auto& ing : r.value("ingredients", json::array())) {
+                int iid = ing.value("id", 0);
+                int cnt = ing.value("count", 0);
+                if (iid > 0 && cnt > 0) rd.ingredients.push_back({iid, cnt});
+            }
+            result.push_back(std::move(rd));
+        }
+    } catch (...) { m_lastOk = false; }
+    return result;
+}
+
 std::vector<TransactionRecord> GW2ApiClient::FetchTransactions(const std::string& path, int maxPages) {
     std::vector<TransactionRecord> result;
     if (m_apiKey.empty()) { m_lastOk = false; return result; }

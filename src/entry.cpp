@@ -50,7 +50,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 5;
+    AddonDef.Version.Minor = 6;
     AddonDef.Version.Build = 0;
     AddonDef.Version.Revision = 1;
     AddonDef.Author = "Onur";
@@ -97,7 +97,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->GUI_Register(RT_Render, AddonRender);
     APIDefs->GUI_Register(RT_OptionsRender, AddonOptions);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.5 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.6 loaded.");
 }
 
 void AddonUnload() {
@@ -887,6 +887,175 @@ void AddonRender() {
                 ImGui::EndTabItem();
             }
 
+            // ===== TAB 4: Crafting — recipe profit calculator =====
+            if (ImGui::BeginTabItem("Crafting")) {
+                const ImVec4 green(0.2f, 0.9f, 0.3f, 1.0f), red(0.9f, 0.3f, 0.2f, 1.0f);
+                const ImVec4 yellow(0.9f, 0.8f, 0.2f, 1.0f);
+                auto cs = g_worker->GetCraftingSnapshot();
+
+                if (!cs.hasData) {
+                    if (ImGui::Button("Fiyatlari Cek"))
+                        g_worker->RequestCrafting();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Time-gated gunluk receleri + fiyatlari API'den cekmek icin tikla");
+                } else {
+                    if (ImGui::Button("Yenile"))
+                        g_worker->RequestCrafting();
+                    ImGui::SameLine();
+                    int secs = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - cs.lastRefresh).count());
+                    ImGui::TextDisabled("Son yenileme: %d sn once", secs);
+
+                    // ---- Time-gated daily crafts
+                    ImGui::Separator();
+                    ImGui::Text("Gunluk Time-Gated Craft (450 rating, 1/gun)");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Bu 4 tier-1 ascended malzeme gunde 1 kez craftlanabilir.\n"
+                                          "En istikrarli altin kazanma yolu.\n"
+                                          "Her disiplini 450'ye kasmak gerekir; maliyet icin gw2efficiency.com/crafting/calculator");
+
+                    if (cs.timeGated.empty()) {
+                        ImGui::TextDisabled("  Rece bilgisi cekilemedi");
+                    } else {
+                        int totalProfit = 0, totalProfitI = 0;
+                        if (ImGui::BeginTable("##tg", 7,
+                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                ImGuiTableFlags_SizingStretchProp)) {
+                            ImGui::TableSetupColumn("Urun", 0, 2.5f);
+                            ImGui::TableSetupColumn("Disiplin", 0, 2.0f);
+                            ImGui::TableSetupColumn("Maliyet", 0, 1.2f);
+                            ImGui::TableSetupColumn("Satis", 0, 1.2f);
+                            ImGui::TableSetupColumn("Kar (sabirli)", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 1.3f);
+                            ImGui::TableSetupColumn("Kar (anlik)", 0, 1.3f);
+                            ImGui::TableSetupColumn("ROI", 0, 0.7f);
+                            ImGui::TableHeadersRow();
+
+                            for (auto& bd : cs.timeGated) {
+                                ImGui::TableNextRow();
+                                ImGui::PushID(bd.recipeId);
+
+                                ImGui::TableNextColumn();
+                                CopyableName(bd.outputName, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+
+                                ImGui::TableNextColumn();
+                                std::string discs;
+                                for (size_t i = 0; i < bd.disciplines.size(); ++i) {
+                                    if (i) discs += ", ";
+                                    discs += bd.disciplines[i];
+                                }
+                                ImGui::TextDisabled("%s", discs.c_str());
+
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(bd.totalCost).c_str());
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::BeginTooltip();
+                                    ImGui::Text("Malzeme maliyeti (sabirli alis emri):");
+                                    for (auto& l : bd.lines) {
+                                        ImGui::Text("  %dx %s = %s%s%s",
+                                                    l.count, l.name.c_str(), ProfitEngine::FormatCopper(l.totalCost).c_str(),
+                                                    l.vendor ? " (vendor)" : "", l.crafted ? " (craft)" : "");
+                                    }
+                                    ImGui::Separator();
+                                    ImGui::Text("Anlik alis: %s", ProfitEngine::FormatCopper(bd.totalCostInstant).c_str());
+                                    ImGui::EndTooltip();
+                                }
+
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(bd.sellRevenue).c_str());
+
+                                ImGui::TableNextColumn();
+                                ImGui::TextColored(bd.profit > 0 ? green : red, "%s",
+                                                   ProfitEngine::FormatCopper(bd.profit).c_str());
+                                totalProfit += bd.profit;
+
+                                ImGui::TableNextColumn();
+                                ImGui::TextColored(bd.profitInstant > 0 ? green : red, "%s",
+                                                   ProfitEngine::FormatCopper(bd.profitInstant).c_str());
+                                totalProfitI += bd.profitInstant;
+
+                                ImGui::TableNextColumn();
+                                ImGui::TextColored(bd.roi > 5 ? green : bd.roi > 0 ? yellow : red, "%.0f%%", bd.roi);
+
+                                if (!bd.complete) {
+                                    ImGui::SameLine();
+                                    ImGui::TextColored(yellow, " (?)");
+                                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bazi fiyatlar eksik.");
+                                }
+                                ImGui::PopID();
+                            }
+                            ImGui::EndTable();
+                        }
+                        ImGui::TextColored(totalProfit > 0 ? green : red,
+                            "Toplam gunluk: %s (sabirli) / %s (anlik)",
+                            ProfitEngine::FormatCopper(totalProfit).c_str(),
+                            ProfitEngine::FormatCopper(totalProfitI).c_str());
+                        ImGui::TextDisabled("Leveling maliyeti degisken — gw2efficiency.com/crafting/calculator kullan");
+
+                        // Config field for user-entered leveling cost
+                        static int levelCostGold = 0;
+                        ImGui::SetNextItemWidth(100);
+                        if (ImGui::InputInt("Leveling maliyetim (gold)", &levelCostGold, 5, 20)) {
+                            if (levelCostGold < 0) levelCostGold = 0;
+                        }
+                        if (levelCostGold > 0 && totalProfit > 0) {
+                            double days = (levelCostGold * 10000.0) / totalProfit;
+                            ImGui::SameLine();
+                            ImGui::Text("Amorti: %.0f gun (tum disiplinlerle)", days);
+                        }
+                    }
+
+                    // ---- Custom recipe search
+                    ImGui::Separator();
+                    ImGui::Text("Recete Hesaplayici");
+                    static char craftIdBuf[16] = "";
+                    ImGui::SetNextItemWidth(100);
+                    ImGui::InputText("Cikti Item ID", craftIdBuf, sizeof(craftIdBuf), ImGuiInputTextFlags_CharsDecimal);
+                    ImGui::SameLine();
+                    if (ImGui::Button("Hesapla") && craftIdBuf[0] != '\0') {
+                        int id = std::atoi(craftIdBuf);
+                        if (id > 0) g_worker->RequestCraftingSearch(id);
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(?)");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Urun item ID'sini gir (Wiki'den). Recete API'den cekilir,\n"
+                                          "malzeme maliyeti hesaplanir. Craft vs Buy: ucuz olan secilir.");
+
+                    for (auto& bd : cs.custom) {
+                        ImGui::PushID(bd.recipeId);
+                        ImVec4 col = bd.profit > 0 ? green : red;
+                        CopyableName(bd.outputName, col);
+                        ImGui::SameLine();
+                        ImGui::Text("Maliyet %s | Satis %s | Kar %s (%.0f%%)",
+                                    ProfitEngine::FormatCopper(bd.totalCost).c_str(),
+                                    ProfitEngine::FormatCopper(bd.sellRevenue).c_str(),
+                                    ProfitEngine::FormatCopper(bd.profit).c_str(), bd.roi);
+                        if (!bd.tradeable) { ImGui::SameLine(); ImGui::TextColored(yellow, "TP'de satilamaz"); }
+                        if (!bd.complete) { ImGui::SameLine(); ImGui::TextColored(yellow, "(eksik fiyat)"); }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::BeginTooltip();
+                            ImGui::Text("Recete #%d — %s (x%d)", bd.recipeId, bd.outputName.c_str(), bd.outputCount);
+                            ImGui::Text("Disiplin: %s, min rating %d",
+                                        bd.disciplines.empty() ? "?" : bd.disciplines[0].c_str(), bd.minRating);
+                            ImGui::Separator();
+                            for (auto& l : bd.lines) {
+                                ImGui::Text("  %dx %s = %s%s%s%s",
+                                            l.count, l.name.c_str(), ProfitEngine::FormatCopper(l.totalCost).c_str(),
+                                            l.vendor ? " (vendor)" : "", l.crafted ? " (craft ucuz)" : "",
+                                            l.gated ? " (gunluk)" : "");
+                            }
+                            ImGui::Separator();
+                            ImGui::Text("Toplam: %s (sabirli) / %s (anlik)",
+                                        ProfitEngine::FormatCopper(bd.totalCost).c_str(),
+                                        ProfitEngine::FormatCopper(bd.totalCostInstant).c_str());
+                            ImGui::EndTooltip();
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndTabItem();
+            }
+
             ImGui::EndTabBar();
         }
     }
@@ -895,7 +1064,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.5");
+    ImGui::Text("TP Assistant v0.6");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";
