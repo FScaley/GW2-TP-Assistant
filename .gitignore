@@ -1,0 +1,57 @@
+# Build outputs
+build/
+out/
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.cachefile
+ipch/
+
+# Config with API key — NEVER commit
+config.json
+settings.json
+test_config.json
+
+# Local data
+*.db
+*.sqlite
+price_history/
+
+# Dependencies (download locally)
+vendor/
+
+# Reference template (not part of our project)
+nexus-template-ref/
+
+# ImGui SDK extras (not needed for build)
+src/imgui/examples/
+src/imgui/backends/
+src/imgui/docs/
+src/imgui/misc/
+src/imgui/.github/
+src/imgui/.editorconfig
+src/imgui/.gitattributes
+src/imgui/.gitignore
+src/imgui/imgui_demo.cpp
+
+# Object files from command-line compile
+*.obj
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

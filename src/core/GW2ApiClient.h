@@ -1,0 +1,52 @@
+#pragma once
+#include "HttpClient.h"
+#include "ProfitEngine.h"
+#include <vector>
+#include <string>
+#include <chrono>
+
+struct ItemInfo {
+    int id = 0;
+    std::string name;
+};
+
+struct TransactionRecord {
+    int64_t id = 0;
+    int itemId = 0;
+    int price = 0;
+    int quantity = 0;
+    std::string created;
+    std::string purchased;
+};
+
+class GW2ApiClient {
+public:
+    GW2ApiClient();
+
+    void SetApiKey(const std::string& key) { m_apiKey = key; }
+
+    // Commerce endpoints (no auth)
+    std::vector<PriceData> GetPrices(const std::vector<int>& itemIds);
+
+    // Item info (no auth)
+    std::vector<ItemInfo> GetItems(const std::vector<int>& itemIds);
+
+    // Transaction endpoints (auth required)
+    std::vector<TransactionRecord> GetCurrentSells();
+    std::vector<TransactionRecord> GetCurrentBuys();
+    std::vector<TransactionRecord> GetHistorySells();
+    std::vector<TransactionRecord> GetHistoryBuys();
+
+    bool HasApiKey() const { return !m_apiKey.empty(); }
+    bool IsLastRequestOk() const { return m_lastOk; }
+
+    static constexpr const char* API_HOST = "api.guildwars2.com";
+
+private:
+    std::string BuildIdsParam(const std::vector<int>& ids);
+    std::vector<TransactionRecord> FetchTransactions(const std::string& path);
+
+    HttpClient m_http;
+    std::string m_apiKey;
+    bool m_lastOk = false;
+};
