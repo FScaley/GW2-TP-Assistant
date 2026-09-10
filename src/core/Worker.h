@@ -2,6 +2,7 @@
 #include "GW2ApiClient.h"
 #include "ProfitEngine.h"
 #include "ConfigManager.h"
+#include "BookAnalyzer.h"
 #include "../modules/PnLTracker.h"
 #include "../modules/UndercutDetector.h"
 #include <vector>
@@ -28,6 +29,12 @@ struct WatchlistSnapshot {
         bool hasMarket = false; // both buy orders and sell listings exist
         int orderQty = 0;        // min(250, positionCapital / buyPrice)
         int profitPerOrder = 0;  // flip.profit * orderQty
+        // Order-book depth (from /v2/commerce/listings)
+        bool hasBook = false;
+        bool bookStale = false;  // listings call failed; ladder carried over from previous poll
+        BookStats book;
+        std::vector<BookLevel> buyTop;   // top 5 levels, display only
+        std::vector<BookLevel> sellTop;
     };
     std::vector<Entry> entries;
     std::chrono::steady_clock::time_point timestamp;

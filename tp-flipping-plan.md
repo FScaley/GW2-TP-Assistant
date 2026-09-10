@@ -407,6 +407,74 @@ crafting calculator ile hesapla, ~1-3g/gün kâr ile karşılaştır.
 
 ### Faz 5: Ek Özellikler
 - [ ] Salvage kâr hesaplayıcı
-- [ ] Fiyat geçmişi (lokal depolama + grafik)
-- [ ] Emir defteri derinliği görselleştirme
+- [ ] Fiyat geçmişi + hacim tahmini (lokal depolama, listings farkından Sold/Bought proxy, grafik)
 - [ ] Türkçe UI (ana dil)
+
+#### Faz 5a: Emir Defteri Derinliği ✅ (10 Eyl 2026)
+**Neden:** Bugünkü analizin açık bıraktığı tek soru "alış emrim ne kadar bekler?" Prices endpoint'i sadece
+en iyi fiyatı verir; kuyruk, kademe ve inceliği vermez. Radiant tuzağı listings'te çıplak görünüyordu
+(alış: 52s62c×38 → 52s40c×25 → **27s92c**×20 — 3. kademe %47 aşağıda).
+
+**Kaynak:** `GET /v2/commerce/listings?ids=…` (≤200 id, auth yok, canlı doğrulandı). Item başına
+`buys[]` fiyat azalan, `sells[]` fiyat artan; her kademe `{unit_price, quantity, listings}`.
+Poll başına 2 çağrı (prices + listings) — 300 burst limitine göre önemsiz. Payload item başına 100+
+kademe olabilir → worker'da parse et, snapshot'a sadece top-5 kademe + toplamlar koy.
+
+**Veri modeli (`BookAnalyzer.h` → `BookStats`, `WatchlistSnapshot::Entry::book`):**
+```
+struct BookLevel { int price; int qty; int listings; };
+struct OrderBook { int itemId; vector<BookLevel> buys /*azalan*/, sells /*artan*/; };
+struct BookStats {
+  int buyQtyAtTop, sellQtyAtTop;      // en iyi fiyattaki birim = aynı fiyata girersem önümdeki kuyruk
+  int buyQtyWithin5, sellQtyWithin5;  // %5 bandındaki birim = gerçekçi rekabet
+  int buyQtySum, sellQtySum;          // tam merdiven toplamı (≈ prices.quantity — doğrulandı)
+  int buyLevels, sellLevels;
+  bool thinBook;     // 2×orderQty'lik kümülatif alış desteği top'un %10+ altında ya da merdiven bitiyor
+  bool depthCovers;  // iki taraf da orderQty'yi karşılıyor (anlık flip mümkün)
+  int instantBuyCost, instantSellRev, instantFlip;  // tam merdivenden süpürme (VWAP), satış vergili
+};
+Entry: bool hasBook, bookStale; BookStats book; vector<BookLevel> buyTop, sellTop; // top-5 sadece görüntü
+```
+
+**DÜZELTME (advisor, tasarım incelemesi):**
+1. `thinBook` "2. kademe %10 aşağıda" tanımı Radiant'ı **kaçırıyordu** (2. kademe 52s40c = %0.4 aşağı; uçurum
+   3. kademede). Yeni tanım pozisyon boyutuna bağlı: kümülatif alış adedi `2×orderQty`'ye ulaştığı fiyat
+   top'un %10+ altındaysa (ya da merdiven bitmeden ulaşamıyorsa) → İNCE. Radiant (38 → 76 gerekli: 38+25=63 →
+   3. kademe 27s92c = %47) ✓, Compote (250 → 500: 149+772=921 @122c, %0.8) ✗, Badge (125 → 250: 400 @1593, %0.06) ✗.
+2. VWAP top-5'ten hesaplanırsa yanlış (Compote satış top-3 = 80 birim, emir 250). Tüm istatistikler worker'da
+   **tam merdiven** üzerinde hesaplanıp skaler saklanıyor; kesilmiş top-5 yalnızca tooltip için.
+   Merdiven emri karşılamıyorsa `depthCovers=false` → "defter emir boyutunu bile karşılamıyor".
+3. `bookStale` için açık carry-forward: `PollOnce` başında eski snapshot kopyalanır; listings başarısızsa
+   entry'nin defter alanları eski entry'den kopyalanır + `bookStale=true`. Yorum değil, davranış.
+4. `GetListings` 206 Partial Content kabul eder (tek kötü ID tüm defterleri boşaltmasın).
+5. Faz 3'te açık kalan `UndercutInfo::unitsBelow` artık dolu: Σ satış adedi (fiyat < benim fiyatım) →
+   Undercut sekmesinde "Altında: N birim" = benim listem sıraya gelmeden önce satılması gereken miktar.
+
+**Kullanıcıya gösterilen (10 sütun korunarak — 11. sütun 950px'te sıkışıyordu):**
+- **Talep** hücresi: `149 / 55.8K` = top kuyruk / toplam. Renk: kuyruk ≤ ½·orderQty yeşil, ≤ 3·orderQty
+  sarı, üstü kırmızı; `bookStale` ise soluk. Hover → alış merdiveni (5 kademe: fiyat × adet × emir sayısı),
+  "+N kademe daha", %5 bandı, ipucu "+1c teklif → kuyruk 0".
+- **Arz** hücresi: `41 / 1.2K` = en iyi fiyattaki / toplam. Hover → satış merdiveni + "%5 bandındaki
+  birimler seni geri undercut eder".
+- **Durum** → **İNCE** (turuncu, ALIM RİSKLİ'den sonra, KARLI'dan önce). Tooltip 2×orderQty sayısını verir.
+- **Kâr/Emir** tooltip → "Anlık flip (sabırsız, defterden süpür): −X" ya da "Defter N birimi karşılamıyor".
+  Sabırlı kâr ile yan yana → sabrın neden şart olduğunu rakamla gösterir.
+
+**Mimari:** aynı worker/snapshot deseni; poll başına 2 çağrı (prices + listings). Render thread'de sıfır HTTP.
+
+**Test sonuçları (10 Eyl 2026):**
+- `test_book` 6/6: Radiant İNCE ✓, Compote depthCovers=false + instantBuy=315×41+316×20+317×19 ✓,
+  Badge derin + anlık flip negatif ✓, kısa merdiven ✓, boş defter ✓, TopN ✓.
+- `test_worker` [3b]: 17/17 defter geldi; `buyTop[0].price` ≈ `price.buyPrice` 17/17 (%5 içinde);
+  `buyQtySum` ≈ `price.buyQty` 17/17 (%10 içinde; ör. 32067/32060) → **prices.quantity = toplam derinlik**
+  varsayımı sabitlendi, Talep/Arz'daki "kuyruk" bilgisi gerçekten yeni. 1 İNCE: Potent Master Tuning
+  Crystal (top 18s × 10 birim). Regresyon: ForcePoll, dedup, resolve, remove, Stop 0ms hepsi geçti.
+- `test_pnl` 6/6 değişmedi.
+
+- [x] GW2ApiClient::GetListings(ids) → std::vector<OrderBook> (200/206)
+- [x] BookAnalyzer (saf, header-only): Analyze(book, orderQty) + TopN + test_book.cpp
+- [x] Worker::PollOnce: listings çağrısı + Entry doldurma + carry-forward/bookStale
+- [x] UI: Talep/Arz "kuyruk / toplam", hover merdivenleri, İNCE etiketi, anlık flip tooltip
+- [x] Undercut unitsBelow
+- [x] test_worker [3b] genişletme
+- [ ] Oyun içi doğrulama (kullanıcı): DLL kopyala → Talep hücresine hover → merdiven görünmeli

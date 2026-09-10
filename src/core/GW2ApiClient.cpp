@@ -1,6 +1,7 @@
 #include "GW2ApiClient.h"
 #include <json.hpp>
 #include <sstream>
+#include <algorithm>
 
 using json = nlohmann::json;
 
@@ -38,6 +39,46 @@ std::vector<PriceData> GW2ApiClient::GetPrices(const std::vector<int>& itemIds) 
             pd.buyQty = item["buys"]["quantity"].get<int>();
             pd.sellQty = item["sells"]["quantity"].get<int>();
             result.push_back(pd);
+        }
+    } catch (...) {
+        m_lastOk = false;
+    }
+    return result;
+}
+
+std::vector<OrderBook> GW2ApiClient::GetListings(const std::vector<int>& itemIds) {
+    std::vector<OrderBook> result;
+    if (itemIds.empty()) return result;
+
+    std::string path = "/v2/commerce/listings?ids=" + BuildIdsParam(itemIds);
+    auto resp = m_http.Get(API_HOST, path);
+
+    if (!resp || (resp->statusCode != 200 && resp->statusCode != 206)) {
+        m_lastOk = false;
+        return result;
+    }
+
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& item : j) {
+            OrderBook ob;
+            ob.itemId = item["id"].get<int>();
+            auto parseSide = [](const json& arr, std::vector<BookLevel>& out) {
+                for (auto& lv : arr) {
+                    BookLevel bl;
+                    bl.price = lv["unit_price"].get<int>();
+                    bl.qty = lv["quantity"].get<int>();
+                    bl.listings = lv.value("listings", 0);
+                    out.push_back(bl);
+                }
+            };
+            if (item.contains("buys"))  parseSide(item["buys"],  ob.buys);
+            if (item.contains("sells")) parseSide(item["sells"], ob.sells);
+            // API returns best-first, but don't depend on it
+            std::sort(ob.buys.begin(),  ob.buys.end(),  [](auto& a, auto& b) { return a.price > b.price; });
+            std::sort(ob.sells.begin(), ob.sells.end(), [](auto& a, auto& b) { return a.price < b.price; });
+            result.push_back(std::move(ob));
         }
     } catch (...) {
         m_lastOk = false;

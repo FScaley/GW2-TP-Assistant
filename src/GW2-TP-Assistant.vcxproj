@@ -106,6 +106,7 @@
     <ClInclude Include="core\ProfitEngine.h" />
     <ClInclude Include="core\ConfigManager.h" />
     <ClInclude Include="core\Worker.h" />
+    <ClInclude Include="core\BookAnalyzer.h" />
     <ClInclude Include="modules\PnLTracker.h" />
     <ClInclude Include="modules\UndercutDetector.h" />
   </ItemGroup>

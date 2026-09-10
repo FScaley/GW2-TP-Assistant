@@ -10,6 +10,18 @@ struct ItemInfo {
     std::string name;
 };
 
+struct BookLevel {
+    int price = 0;
+    int qty = 0;
+    int listings = 0;
+};
+
+struct OrderBook {
+    int itemId = 0;
+    std::vector<BookLevel> buys;   // price descending (best first)
+    std::vector<BookLevel> sells;  // price ascending (best first)
+};
+
 struct TransactionRecord {
     int64_t id = 0;
     int itemId = 0;
@@ -27,6 +39,7 @@ public:
 
     // Commerce endpoints (no auth)
     std::vector<PriceData> GetPrices(const std::vector<int>& itemIds);
+    std::vector<OrderBook> GetListings(const std::vector<int>& itemIds);
 
     // Item info (no auth)
     std::vector<ItemInfo> GetItems(const std::vector<int>& itemIds);

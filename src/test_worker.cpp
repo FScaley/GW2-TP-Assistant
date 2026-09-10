@@ -48,6 +48,29 @@ int main() {
     }
     std::cout << "  " << okCount << "/" << snap.entries.size() << " items with data\n";
 
+    // --- Faz 5a: order book ---
+    std::cout << "\n[3b] Order book check...\n";
+    int bookCount = 0, priceMatch = 0, sumMatch = 0, thinCount = 0;
+    for (auto& e : snap.entries) {
+        if (!e.hasBook || !e.hasMarket) continue;
+        bookCount++;
+        if (e.buyTop.empty()) continue;
+        // prices vs listings come from separate caches — expect closeness, not equality
+        int diff = std::abs(e.buyTop[0].price - e.price.buyPrice);
+        if (diff * 20 <= e.price.buyPrice) priceMatch++;           // within 5%
+        int sumDiff = std::abs(e.book.buyQtySum - e.price.buyQty);
+        if (sumDiff * 10 <= e.price.buyQty) sumMatch++;            // within 10%
+        if (e.book.thinBook) thinCount++;
+        std::cout << "  " << std::left << std::setw(32) << e.name
+                  << "top=" << ProfitEngine::FormatCopper(e.buyTop[0].price)
+                  << " q@top=" << e.book.buyQtyAtTop
+                  << " sum=" << e.book.buyQtySum << "/" << e.price.buyQty
+                  << (e.book.thinBook ? " THIN" : "") << "\n";
+    }
+    std::cout << "  books=" << bookCount << " topPriceWithin5%=" << priceMatch
+              << " sumWithin10%=" << sumMatch << " thin=" << thinCount
+              << (bookCount > 0 && priceMatch > 0 && sumMatch * 2 >= bookCount ? " [OK]" : " [FAIL]") << "\n";
+
     // --- Faz 2: ForcePoll test ---
     std::cout << "\n[4] ForcePoll test...\n";
     auto ts1 = worker.GetSnapshot().timestamp;

@@ -51,7 +51,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 2;
+    AddonDef.Version.Minor = 3;
     AddonDef.Version.Build = 0;
     AddonDef.Version.Revision = 1;
     AddonDef.Author = "Onur";
@@ -98,7 +98,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->GUI_Register(RT_Render, AddonRender);
     APIDefs->GUI_Register(RT_OptionsRender, AddonOptions);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.2 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.3 loaded.");
 }
 
 void AddonUnload() {
@@ -155,6 +155,23 @@ static void CopyableName(const std::string& name, ImVec4 color) {
             std::chrono::steady_clock::now() - g_copiedAt < std::chrono::milliseconds(1500);
         ImGui::SetTooltip(justCopied ? "Kopyalandi!" : "Tikla: ismi kopyala (TP'de aratmak icin)");
     }
+}
+
+static std::string FormatQty(int qty);
+
+static void LadderTooltip(const char* title, const std::vector<BookLevel>& ladder,
+                          int within5, int levels, bool stale, const char* hint) {
+    ImGui::BeginTooltip();
+    ImGui::Text("%s%s", title, stale ? "  (eski — listings basarisiz)" : "");
+    ImGui::Separator();
+    for (auto& lv : ladder)
+        ImGui::Text("%10s  x %-6d  (%d emir)", ProfitEngine::FormatCopper(lv.price).c_str(), lv.qty, lv.listings);
+    if (levels > (int)ladder.size())
+        ImGui::TextDisabled("... +%d kademe daha", levels - (int)ladder.size());
+    ImGui::Separator();
+    ImGui::Text("%%5 bandinda: %s birim", FormatQty(within5).c_str());
+    ImGui::TextDisabled("%s", hint);
+    ImGui::EndTooltip();
 }
 
 static ImVec4 RoiColor(double roi) {
@@ -311,20 +328,64 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
                           : e.profitPerOrder > 0      ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)
                                                        : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);
             ImGui::TextColored(ppoCol, "%s", ProfitEngine::FormatCopper(e.profitPerOrder).c_str());
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%d adet x %s", e.orderQty, ProfitEngine::FormatCopper(e.flip.profit).c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("%d adet x %s (sabirli: alis emri + satis listesi)",
+                            e.orderQty, ProfitEngine::FormatCopper(e.flip.profit).c_str());
+                if (e.hasBook) {
+                    ImGui::Separator();
+                    if (e.book.depthCovers)
+                        ImGui::Text("Anlik flip (sabirsiz, defterden supur): %s",
+                                    ProfitEngine::FormatCopper(e.book.instantFlip).c_str());
+                    else
+                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f),
+                                           "Defter %d birimi karsilamiyor — anlik flip mumkun degil", e.orderQty);
+                    ImGui::TextDisabled("Anlik = satislari supurerek al, alis emirlerine dokerek sat.");
+                }
+                ImGui::EndTooltip();
+            }
 
-            // Talep (buy orders = alici kuyrugu)
+            // Talep: "kuyruk / toplam" — at-top queue is what matters if I match the best price
             ImGui::TableNextColumn();
-            ImGui::Text("%s", FormatQty(e.price.buyQty).c_str());
+            if (e.hasBook) {
+                int q = e.book.buyQtyAtTop;
+                ImVec4 qCol = q <= e.orderQty / 2 ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)
+                            : q <= e.orderQty * 3 ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)
+                                                  : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);
+                if (e.bookStale) qCol.w = 0.5f;
+                ImGui::BeginGroup();   // group = one hover target for "queue / total"
+                ImGui::TextColored(qCol, "%s", FormatQty(q).c_str());
+                ImGui::SameLine(0, 0);
+                ImGui::TextDisabled(" / %s", FormatQty(e.price.buyQty).c_str());
+                ImGui::EndGroup();
+                if (ImGui::IsItemHovered())
+                    LadderTooltip("ALIS EMIRLERI (kuyruk / toplam)", e.buyTop, e.book.buyQtyWithin5,
+                                  e.book.buyLevels, e.bookStale,
+                                  "Ayni fiyata girersen bu kadar birim onunde. +1c teklif -> kuyruk 0.");
+            } else {
+                ImGui::Text("%s", FormatQty(e.price.buyQty).c_str());
+            }
 
-            // Arz (sell listings = satici kuyrugu)
+            // Arz: "en iyi fiyattaki / toplam" — how much I'd undercut when listing at top-1c
             ImGui::TableNextColumn();
             float ratio = e.price.buyQty > 0 ? (float)e.price.sellQty / e.price.buyQty : 99.0f;
-            ImVec4 supplyCol = ratio < 1.0f ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)  // talep > arz = iyi
-                             : ratio < 3.0f ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)  // dengeli
-                             : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);                 // arz baskın = kuyruk uzun
-            ImGui::TextColored(supplyCol, "%s", FormatQty(e.price.sellQty).c_str());
+            ImVec4 supplyCol = ratio < 1.0f ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)
+                             : ratio < 3.0f ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)
+                             : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);
+            if (e.hasBook) {
+                if (e.bookStale) supplyCol.w = 0.5f;
+                ImGui::BeginGroup();
+                ImGui::TextColored(supplyCol, "%s", FormatQty(e.book.sellQtyAtTop).c_str());
+                ImGui::SameLine(0, 0);
+                ImGui::TextDisabled(" / %s", FormatQty(e.price.sellQty).c_str());
+                ImGui::EndGroup();
+                if (ImGui::IsItemHovered())
+                    LadderTooltip("SATIS LISTELERI (en iyi / toplam)", e.sellTop, e.book.sellQtyWithin5,
+                                  e.book.sellLevels, e.bookStale,
+                                  "Top-1c listelersen onunde 0; %5 bandindaki birimler seni geri undercut eder.");
+            } else {
+                ImGui::TextColored(supplyCol, "%s", FormatQty(e.price.sellQty).c_str());
+            }
 
             ImGui::TableNextColumn();
             if (e.flip.roi <= 0.0)
@@ -335,6 +396,13 @@ static void RenderWatchlistTable(WatchlistSnapshot snap) {
                     ImGui::SetTooltip("Talep derinligi cok dusuk (%s) — alis emri dolmayabilir.\n"
                                       "Genis spread'in sebebi bu olabilir. GW2BLTC'de Bought/gun kontrol et.",
                                       FormatQty(e.price.buyQty).c_str());
+            }
+            else if (e.hasBook && e.book.thinBook) {
+                ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "INCE");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Alis defteri ince: 2x emir boyutu (%d) icin destek en iyi fiyatin\n"
+                                      "%%10+ altinda ya da hic yok. Top emir cekilirse fiyat coker.",
+                                      2 * e.orderQty);
             }
             else if (e.flip.roi > 5.0)
                 ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "KARLI");
@@ -573,9 +641,10 @@ void AddonRender() {
                             ImGui::PushID(u.itemId);
                             CopyableName(u.itemName.empty() ? "Item #" + std::to_string(u.itemId) : u.itemName,
                                          ImVec4(0.9f, 0.6f, 0.2f, 1.0f));
-                            ImGui::Text("  Senin: %s | En dusuk: %s",
+                            ImGui::Text("  Senin: %s | En dusuk: %s | Altinda: %s birim",
                                 ProfitEngine::FormatCopper(u.myPrice).c_str(),
-                                ProfitEngine::FormatCopper(u.lowestPrice).c_str());
+                                ProfitEngine::FormatCopper(u.lowestPrice).c_str(),
+                                FormatQty(u.unitsBelow).c_str());
 
                             if (u.relist.relistLoss) {
                                 ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f),
@@ -602,7 +671,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.2");
+    ImGui::Text("TP Assistant v0.3");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

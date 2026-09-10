@@ -113,6 +113,11 @@ void Worker::PollOnce() {
         return;
     }
 
+    // Order books: a failure here must not drop prices — carry the previous ladder forward.
+    auto books = m_api->GetListings(ids);
+    bool booksOk = m_api->IsLastRequestOk();
+    WatchlistSnapshot prev = GetSnapshot();
+
     // Resolve placeholder names
     std::vector<int> unresolvedIds;
     for (auto& wi : watchlist) {
@@ -149,6 +154,29 @@ void Worker::PollOnce() {
                     int cap = m_config->GetPositionCapital();
                     entry.orderQty = std::clamp(cap / p.buyPrice, 1, 250);
                     entry.profitPerOrder = entry.flip.profit * entry.orderQty;
+                }
+
+                if (booksOk) {
+                    for (auto& ob : books) {
+                        if (ob.itemId == wi.id) {
+                            entry.book = BookAnalyzer::Analyze(ob, entry.orderQty);
+                            entry.buyTop = BookAnalyzer::TopN(ob.buys, 5);
+                            entry.sellTop = BookAnalyzer::TopN(ob.sells, 5);
+                            entry.hasBook = true;
+                            break;
+                        }
+                    }
+                } else {
+                    for (auto& old : prev.entries) {
+                        if (old.itemId == wi.id && old.hasBook) {
+                            entry.book = old.book;
+                            entry.buyTop = old.buyTop;
+                            entry.sellTop = old.sellTop;
+                            entry.hasBook = true;
+                            entry.bookStale = true;
+                            break;
+                        }
+                    }
                 }
 
                 bool wasAlerted = m_alertedItems.count(wi.id) > 0;

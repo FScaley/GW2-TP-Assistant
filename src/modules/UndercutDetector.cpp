@@ -23,6 +23,7 @@ std::vector<UndercutInfo> UndercutDetector::Check(GW2ApiClient& api) {
         ids.push_back(it->first);
 
     auto prices = api.GetPrices(ids);
+    auto books = api.GetListings(ids);
 
     for (auto it = myListings.begin(); it != myListings.end(); ++it) {
         int itemId = it->first;
@@ -46,6 +47,15 @@ std::vector<UndercutInfo> UndercutDetector::Check(GW2ApiClient& api) {
                 break;
             }
         }
+        // Units listed below my price = what has to sell before my listing is reached
+        for (auto& ob : books) {
+            if (ob.itemId == itemId) {
+                for (auto& lv : ob.sells)
+                    if (lv.price < ms.price) info.unitsBelow += lv.qty;
+                break;
+            }
+        }
+
         if (info.isUndercut)
             results.push_back(info);
     }
