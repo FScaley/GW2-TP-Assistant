@@ -4,7 +4,7 @@
 #include "ConfigManager.h"
 #include "BookAnalyzer.h"
 #include "../modules/PnLTracker.h"
-#include "../modules/UndercutDetector.h"
+#include "../modules/OrderTracker.h"
 #include "../modules/VolumeTracker.h"
 #include <vector>
 #include <map>
@@ -55,6 +55,18 @@ struct WatchlistSnapshot {
     bool apiOk = false;
 };
 
+// My open orders vs the market + recent fills/sales. Render thread reads a copy.
+struct OrdersSnapshot {
+    std::vector<BuyOrderView> buys;
+    std::vector<SellListingView> sells;
+    std::vector<OrderEvent> recentEvents;   // newest first
+    std::chrono::steady_clock::time_point lastCheck;
+    bool hasChecked = false;   // at least one successful check this session
+    bool stale = false;        // last check failed; previous data kept (state untouched)
+    int sessionFills = 0;
+    int sessionSales = 0;
+};
+
 class Worker {
 public:
     using AlertCallback = std::function<void(const std::string&)>;
@@ -64,20 +76,21 @@ public:
 
     WatchlistSnapshot GetSnapshot() const;
     PnLSummary GetPnLSnapshot() const;
-    std::vector<UndercutInfo> GetUndercutSnapshot() const;
+    OrdersSnapshot GetOrdersSnapshot() const;
     std::vector<AlertMsg> DrainAlerts();
 
     void SetAlertCallback(AlertCallback cb) { m_alertCb = cb; }
     void ForcePoll();
     void RequestPnL();
-    void RequestUndercut();
+    void RequestOrders();
     void SetPnLIgnored(int itemId, bool ignored);
 
 private:
     void Run();
     void PollOnce();
-    void DoPnL();
-    void DoUndercut();
+    void DoPnL(bool incremental = false);   // incremental = newest page only, merged by id
+    void DoOrders();
+    void ResolveNames(const std::vector<int>& ids);
 
     GW2ApiClient* m_api = nullptr;
     ConfigManager* m_config = nullptr;
@@ -91,17 +104,22 @@ private:
     mutable std::mutex m_snapshotMutex;
     WatchlistSnapshot m_snapshot;
     PnLSummary m_pnlSnapshot;
-    std::vector<UndercutInfo> m_undercutSnapshot;
+    OrdersSnapshot m_ordersSnapshot;
 
     AlertCallback m_alertCb;
     std::set<int> m_alertedItems;
     std::vector<AlertMsg> m_pendingAlerts;
     std::atomic<bool> m_forcePoll{false};
     std::atomic<bool> m_pnlRequested{false};
-    std::atomic<bool> m_undercutRequested{false};
+    std::atomic<bool> m_ordersRequested{false};
     bool m_firstPoll = true;
 
     PnLTracker m_pnlTracker;
+    bool m_pnlBaseline = false;   // full history loaded/fetched at least once -> incremental refresh is safe
+
+    // Order tracking: persistent seen-id sets + alert dedup keys; worker-thread only.
+    OrderState m_orderState;
+    std::map<int, std::string> m_nameCache;
 
     // Previous full ladder per item, worker-thread only (never in the snapshot).
     // system_clock on purpose: a suspend/clock jump becomes one discarded interval via the gap rule.

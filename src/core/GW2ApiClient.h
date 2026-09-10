@@ -49,6 +49,9 @@ public:
     std::vector<TransactionRecord> GetCurrentBuys();
     std::vector<TransactionRecord> GetHistorySells();
     std::vector<TransactionRecord> GetHistoryBuys();
+    // Newest 200 only — for change detection and incremental P&L (one call, not fifty)
+    std::vector<TransactionRecord> GetHistorySellsPage0();
+    std::vector<TransactionRecord> GetHistoryBuysPage0();
 
     bool HasApiKey() const { return !m_apiKey.empty(); }
     bool IsLastRequestOk() const { return m_lastOk; }
@@ -57,7 +60,7 @@ public:
 
 private:
     std::string BuildIdsParam(const std::vector<int>& ids);
-    std::vector<TransactionRecord> FetchTransactions(const std::string& path);
+    std::vector<TransactionRecord> FetchTransactions(const std::string& path, int maxPages = 50);
 
     HttpClient m_http;
     std::string m_apiKey;

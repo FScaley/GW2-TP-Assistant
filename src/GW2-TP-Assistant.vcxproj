@@ -108,7 +108,7 @@
     <ClInclude Include="core\Worker.h" />
     <ClInclude Include="core\BookAnalyzer.h" />
     <ClInclude Include="modules\PnLTracker.h" />
-    <ClInclude Include="modules\UndercutDetector.h" />
+    <ClInclude Include="modules\OrderTracker.h" />
     <ClInclude Include="modules\VolumeTracker.h" />
   </ItemGroup>
   <ItemGroup>
@@ -123,7 +123,7 @@
     <ClCompile Include="core\ConfigManager.cpp" />
     <ClCompile Include="core\Worker.cpp" />
     <ClCompile Include="modules\PnLTracker.cpp" />
-    <ClCompile Include="modules\UndercutDetector.cpp" />
+    <ClCompile Include="modules\OrderTracker.cpp" />
     <ClCompile Include="modules\VolumeTracker.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

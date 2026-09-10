@@ -154,6 +154,19 @@ int main() {
     std::cout << "  Item " << testId << " removed: " << (removed ? "YES [OK]" : "NO [FAIL]") << "\n";
     std::cout << "  Watchlist size: " << snap3.entries.size() << "\n";
 
+    // --- Faz 6: orders check without an API key must be a silent no-op ---
+    std::cout << "\n[7b] Orders without API key...\n";
+    {
+        worker.RequestOrders();
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));   // nothing observable to wait on
+        auto os = worker.GetOrdersSnapshot();
+        bool quiet = !os.hasChecked && !os.stale && os.buys.empty() && os.sells.empty();
+        std::cout << "  hasChecked=" << os.hasChecked << " stale=" << os.stale
+                  << " buys=" << os.buys.size() << " sells=" << os.sells.size()
+                  << (quiet ? " [OK]" : " [FAIL]") << "\n";
+        std::cout << "  orders_state.json written: " << (std::filesystem::exists("orders_state.json") ? "yes [FAIL — no key!]" : "no [OK]") << "\n";
+    }
+
     // --- Faz 1 regression: Stop timing ---
     std::cout << "\n[8] Stop timing test...\n";
     auto t0 = std::chrono::steady_clock::now();

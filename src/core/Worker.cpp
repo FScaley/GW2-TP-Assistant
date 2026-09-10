@@ -1,5 +1,6 @@
 #include "Worker.h"
 #include <algorithm>
+#include <ctime>
 
 void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& dataDir) {
     m_api = api;
@@ -8,14 +9,20 @@ void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& 
     m_stop = false;
     m_forcePoll = false;
     m_pnlRequested = false;
-    m_undercutRequested = false;
+    m_ordersRequested = false;
     m_firstPoll = true;
     m_alertedItems.clear();
     m_pendingAlerts.clear();
 
-    m_pnlTracker.LoadLocal(m_dataDir + "\\pnl_data.json");
+    m_pnlBaseline = m_pnlTracker.LoadLocal(m_dataDir + "\\pnl_data.json");
     m_prevBooks.clear();
     m_volume.Load(m_dataDir + "\\volume_history.json");
+
+    m_orderState = OrderState{};
+    OrderTracker::LoadState(m_orderState, m_dataDir + "\\orders_state.json");
+    m_nameCache.clear();
+    m_ordersSnapshot = OrdersSnapshot{};
+    m_ordersSnapshot.recentEvents = m_orderState.recentEvents;   // "Son Olaylar" survives a restart
 
     m_thread = std::thread(&Worker::Run, this);
 }
@@ -37,9 +44,9 @@ PnLSummary Worker::GetPnLSnapshot() const {
     return m_pnlSnapshot;
 }
 
-std::vector<UndercutInfo> Worker::GetUndercutSnapshot() const {
+OrdersSnapshot Worker::GetOrdersSnapshot() const {
     std::lock_guard<std::mutex> lock(m_snapshotMutex);
-    return m_undercutSnapshot;
+    return m_ordersSnapshot;
 }
 
 std::vector<AlertMsg> Worker::DrainAlerts() {
@@ -59,8 +66,8 @@ void Worker::RequestPnL() {
     m_cv.notify_one();
 }
 
-void Worker::RequestUndercut() {
-    { std::lock_guard<std::mutex> lk(m_cvMutex); m_undercutRequested = true; }
+void Worker::RequestOrders() {
+    { std::lock_guard<std::mutex> lk(m_cvMutex); m_ordersRequested = true; }
     m_cv.notify_one();
 }
 
@@ -72,29 +79,30 @@ void Worker::SetPnLIgnored(int itemId, bool ignored) {
 
 void Worker::Run() {
     PollOnce();
+    if (!m_stop) DoOrders();   // first orders check must not wait a full interval
 
     while (!m_stop) {
         int intervalSec = m_config->GetPollIntervalSec();
         std::unique_lock<std::mutex> lock(m_cvMutex);
         m_cv.wait_for(lock, std::chrono::seconds(intervalSec),
             [this] { return m_stop.load() || m_forcePoll.load()
-                     || m_pnlRequested.load() || m_undercutRequested.load(); });
+                     || m_pnlRequested.load() || m_ordersRequested.load(); });
 
         if (m_stop) break;
 
         bool doPrice = m_forcePoll.exchange(false);
         bool doPnl = m_pnlRequested.exchange(false);
-        bool doUc = m_undercutRequested.exchange(false);
+        bool doOrders = m_ordersRequested.exchange(false);
 
-        // Regular poll interval always refreshes prices
-        if (!doPrice && !doPnl && !doUc)
+        // Regular poll interval always refreshes prices (and, with it, my orders)
+        if (!doPrice && !doPnl && !doOrders)
             doPrice = true;
 
         lock.unlock();
 
         if (doPrice) PollOnce();
         if (doPnl) DoPnL();
-        if (doUc) DoUndercut();
+        if ((doPrice || doOrders) && !m_stop) DoOrders();
     }
 }
 
@@ -264,37 +272,29 @@ void Worker::PollOnce() {
     }
 }
 
-void Worker::DoPnL() {
+void Worker::DoPnL(bool incremental) {
     if (!m_api->HasApiKey()) return;
 
-    auto buys = m_api->GetHistoryBuys();
-    auto sells = m_api->GetHistorySells();
+    // pnl_data.json holds everything seen so far and MergeTransactions merges by id, so a
+    // fill-triggered refresh needs only the newest page (1 call each instead of up to 50).
+    auto buys  = incremental ? m_api->GetHistoryBuysPage0()  : m_api->GetHistoryBuys();
+    if (m_stop) return;   // unload must not wait on a second 10 s timeout
+    auto sells = incremental ? m_api->GetHistorySellsPage0() : m_api->GetHistorySells();
+    if (m_stop) return;
 
     m_pnlTracker.MergeTransactions(buys, sells);
-
-    // Resolve item names
-    std::set<int> itemIds;
-    for (auto& b : buys) itemIds.insert(b.itemId);
-    for (auto& s : sells) itemIds.insert(s.itemId);
-    std::vector<int> idsVec(itemIds.begin(), itemIds.end());
-
-    std::map<int, std::string> nameMap;
-    // Batch in groups of 200
-    for (size_t i = 0; i < idsVec.size(); i += 200) {
-        size_t end = std::min(i + 200, idsVec.size());
-        std::vector<int> batch(idsVec.begin() + i, idsVec.begin() + end);
-        auto infos = m_api->GetItems(batch);
-        for (auto& info : infos)
-            nameMap[info.id] = info.name;
-    }
+    if (!incremental) m_pnlBaseline = true;
 
     auto summary = m_pnlTracker.Calculate();
 
-    // Fill item names
+    // Names from the shared cache: covers every entry, not only items on the fetched page
+    std::vector<int> ids;
+    ids.reserve(summary.entries.size());
+    for (auto& entry : summary.entries) ids.push_back(entry.itemId);
+    ResolveNames(ids);
     for (auto& entry : summary.entries) {
-        auto it = nameMap.find(entry.itemId);
-        if (it != nameMap.end())
-            entry.itemName = it->second;
+        auto it = m_nameCache.find(entry.itemId);
+        if (it != m_nameCache.end()) entry.itemName = it->second;
     }
 
     m_pnlTracker.SaveLocal(m_dataDir + "\\pnl_data.json");
@@ -305,47 +305,99 @@ void Worker::DoPnL() {
     }
 }
 
-void Worker::DoUndercut() {
+void Worker::ResolveNames(const std::vector<int>& ids) {
+    std::vector<int> missing;
+    for (int id : ids)
+        if (!m_nameCache.count(id)) missing.push_back(id);
+    if (missing.empty()) return;
+
+    for (auto& wi : m_config->GetWatchlist())              // watchlist names are free
+        if (wi.name.rfind("Item #", 0) != 0) m_nameCache[wi.id] = wi.name;
+    missing.erase(std::remove_if(missing.begin(), missing.end(),
+                  [&](int id) { return m_nameCache.count(id) > 0; }), missing.end());
+
+    for (size_t i = 0; i < missing.size(); i += 200) {
+        std::vector<int> batch(missing.begin() + i, missing.begin() + (std::min)(i + 200, missing.size()));
+        for (auto& info : m_api->GetItems(batch))
+            m_nameCache[info.id] = info.name;
+    }
+}
+
+// Every call is checked individually: one shared m_lastOk flag, and an empty result that is
+// mistaken for "ok" would reset the seen-id sets -> hundreds of phantom DOLDU alerts later.
+void Worker::DoOrders() {
     if (!m_api->HasApiKey()) return;
 
-    UndercutDetector detector;
-    auto undercuts = detector.Check(*m_api);
+    auto fail = [this]() {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_ordersSnapshot.stale = true;      // previous data kept, state untouched
+    };
 
-    if (!undercuts.empty()) {
-        std::vector<int> ids;
-        for (auto& u : undercuts) ids.push_back(u.itemId);
-        auto infos = m_api->GetItems(ids);
-        for (auto& u : undercuts)
-            for (auto& info : infos)
-                if (info.id == u.itemId) { u.itemName = info.name; break; }
+    OrderInputs in;
+    in.now = std::time(nullptr);
+    // Up to ~10 HTTP calls at a 10 s timeout each: bail between them on unload (state is
+    // untouched until Analyze, so stopping here is always safe).
+    in.currentBuys   = m_api->GetCurrentBuys();        if (!m_api->IsLastRequestOk()) return fail();  if (m_stop) return;
+    in.currentSells  = m_api->GetCurrentSells();       if (!m_api->IsLastRequestOk()) return fail();  if (m_stop) return;
+    in.historyBuys   = m_api->GetHistoryBuysPage0();   if (!m_api->IsLastRequestOk()) return fail();  if (m_stop) return;
+    in.historySells  = m_api->GetHistorySellsPage0();  if (!m_api->IsLastRequestOk()) return fail();  if (m_stop) return;
+
+    std::set<int> orderItems, allItems;
+    for (auto& t : in.currentBuys)  orderItems.insert(t.itemId);
+    for (auto& t : in.currentSells) orderItems.insert(t.itemId);
+    allItems = orderItems;
+    for (auto& t : in.historyBuys)  allItems.insert(t.itemId);
+    for (auto& t : in.historySells) allItems.insert(t.itemId);
+
+    // Ladders only for items with open orders (heavy payload); prices for everything (cheap).
+    std::vector<int> orderIds(orderItems.begin(), orderItems.end());
+    std::vector<int> allIds(allItems.begin(), allItems.end());
+    for (size_t i = 0; i < orderIds.size(); i += 200) {
+        std::vector<int> batch(orderIds.begin() + i, orderIds.begin() + (std::min)(i + 200, orderIds.size()));
+        auto books = m_api->GetListings(batch);          if (!m_api->IsLastRequestOk()) return fail();  if (m_stop) return;
+        in.books.insert(in.books.end(), books.begin(), books.end());
     }
-
-    // Use FIFO avg cost from P&L instead of current buy order
-    for (auto& u : undercuts) {
-        int avgCost = m_pnlTracker.GetAvgCost(u.itemId);
-        if (avgCost > 0) {
-            u.buyPrice = avgCost;
-            if (u.isUndercut) {
-                u.relist = ProfitEngine::CalcRelist(
-                    avgCost, u.myPrice, u.lowestPrice - 1);
-            }
-        }
+    for (size_t i = 0; i < allIds.size(); i += 200) {
+        std::vector<int> batch(allIds.begin() + i, allIds.begin() + (std::min)(i + 200, allIds.size()));
+        auto prices = m_api->GetPrices(batch);           if (!m_api->IsLastRequestOk()) return fail();  if (m_stop) return;
+        in.prices.insert(in.prices.end(), prices.begin(), prices.end());
     }
+    ResolveNames(allIds);   // best effort — a miss shows "Item #id", never fails the check
+    if (m_stop) return;
 
-    // Generate alerts for undercuts
-    std::vector<AlertMsg> alerts;
-    for (auto& u : undercuts) {
-        alerts.push_back({
-            "Undercut: " + (u.itemName.empty() ? "Item #" + std::to_string(u.itemId) : u.itemName)
-            + " — " + ProfitEngine::FormatCopper(u.myPrice) + " > "
-            + ProfitEngine::FormatCopper(u.lowestPrice)
-        });
-    }
+    int64_t epochHour = std::chrono::duration_cast<std::chrono::hours>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    in.avgCost = [this](int id) { return m_pnlTracker.GetAvgCost(id); };
+    in.volume  = [this, epochHour](int id) { return m_volume.Estimate(id, epochHour); };
+    in.name    = [this](int id) {
+        auto it = m_nameCache.find(id);
+        return it == m_nameCache.end() ? std::string() : it->second;
+    };
+    in.ok = true;
 
+    auto result = OrderTracker::Analyze(in, m_orderState);
+    if (result.skipped) return fail();
+
+    OrderTracker::SaveState(m_orderState, m_dataDir + "\\orders_state.json");
+
+    int fills = 0, sales = 0;
+    for (auto& e : result.events) (e.type == OrderEvent::Filled ? fills : sales)++;
+    // Something completed -> P&L catches up. Page 0 merge only when a full baseline exists;
+    // otherwise a 200-record P&L would masquerade as complete.
+    if (!result.events.empty()) DoPnL(m_pnlBaseline);
+
+    bool alertsOn = m_config->GetOrderAlerts();
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
-        m_undercutSnapshot = std::move(undercuts);
-        for (auto& a : alerts)
-            m_pendingAlerts.push_back(std::move(a));
+        m_ordersSnapshot.buys = std::move(result.buys);
+        m_ordersSnapshot.sells = std::move(result.sells);
+        m_ordersSnapshot.recentEvents = m_orderState.recentEvents;
+        m_ordersSnapshot.lastCheck = std::chrono::steady_clock::now();
+        m_ordersSnapshot.hasChecked = true;
+        m_ordersSnapshot.stale = false;
+        m_ordersSnapshot.sessionFills += fills;
+        m_ordersSnapshot.sessionSales += sales;
+        if (alertsOn)
+            for (auto& a : result.alerts) m_pendingAlerts.push_back({a});
     }
 }

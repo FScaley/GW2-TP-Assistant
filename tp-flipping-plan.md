@@ -571,3 +571,113 @@ Save/Load roundtrip; 168 sa budama. `test_worker`: 2. poll sonrası observedSec 
 - [x] test_worker [4b] genişletme
 - [ ] Oyun içi: ≥ 2 sa oyun sonrası Devir dolmaya başlar (2–6 sa soluk, ≥ 6 sa normal); Radiant/Opal'i
       izleme listesine geçici ekleyip DOLMUYOR'un çıktığını gör → yöntemin doğrulaması
+
+### Faz 6: Emir Takibi — Outbid, Dolum ve Satış Bildirimleri ✅ kod tamam (11 Eyl 2026), oyun içi doğrulama bekliyor
+**Neden:** Alsat döngüsü: alış emri ver → (outbid? yeniden teklif) → **doldu** → listele → (undercut?
+relist) → **satıldı** → altını topla. Addon bugün yalnızca undercut'ı (elle "Kontrol Et") görüyor. Döngünün
+diğer üç olayı — alış emrim geçildi, alış emrim doldu (listele!), listem satıldı — TP'yi açmadan
+görünmüyor. Hepsi mevcut API + mevcut `tradingpost` scope ile; otomasyon değil, bildirim + karar desteği.
+
+**Kaynaklar (auth, hepsi istemcide var):**
+- `current/buys` → açık alış emirlerim `{id, item_id, price, quantity, created}`; `current/sells` → listelerim.
+- `history/buys` / `history/sells` → tamamlananlar, en yeni önce, `purchased` zamanlı. Delta tespiti için
+  **yalnızca sayfa 0** (200 en yeni) çekilir → `FetchTransactionsPage(path, page)` eklenir; mevcut
+  `FetchTransactions` (50 sayfaya kadar) P&L'de kalır, her kontrolde 50 çağrı atılmaz.
+- Emirlerdeki item'lar için `prices` + `listings` (kuyruk hesabı).
+- Kısıt: transactions uçları sunucu tarafında cache'li (dakikalar). Bildirim gecikmesi ≈ kontrol aralığı + cache.
+
+**Mantık (`modules/OrderTracker`, saf ve testlenebilir):**
+- **Alış emirleri:** (item, fiyat) gruplanır → `myPrice, myQty, oldestCreated`. Defterden `topBuy`;
+  `outbid = topBuy > myPrice`, `outbidBy = topBuy − myPrice`; `aheadQty = Σ alış adedi (fiyat > myPrice)
+  + max(0, aynı fiyattaki adet − myQty)` — aynı kademede sıra bilinmez, **"en fazla"** etiketiyle üst sınır.
+  Öneri: `topBuy + 1c`'ye çıkarsan yeni kâr = `NetRevenue(mevcut satış) − (topBuy+1)`, ROI, kâr/emir
+  (min eşikle renk). 5b entegrasyonu: item hacim geçmişindeyse `beklenenSa = (aheadQty + myQty) /
+  (boughtPerDay/24)`; `yaş = now − created`; yaş > 2×beklenen → **GECİKTİ**.
+- **Satış listeleri:** tüm listelerim (yalnızca undercut'lar değil): `lowest`, `undercut`, `unitsBelow`
+  (Faz 5a), mevcut `CalcRelist` + FIFO ort. maliyet; `beklenenSa = (unitsBelow + myQty) / (soldPerDay/24)`.
+- **Dolum/satış tespiti:** son çekilen history sayfa-0 id kümesi saklanır (`seenBuyIds`, `seenSellIds`,
+  ≤200 int64). Yeni sayfada kümede olmayan id = yeni olay. **İlk çalıştırma tohumlar, bildirmez.** Id
+  monotonluğu varsayılmaz (küme farkı). `orders_state.json` (atomik yazım). Kısmi dolumlar ayrı kayıt
+  gelir → **item başına, kontrol başına toplanır**: "DOLDU: 3 parça, toplam 120x X @ 52s → listele
+  (satış 1g 30s)"; "SATILDI: 100x Y @ 1g 30s → net +Z" (net = NetRevenue×adet − ort.maliyet×adet,
+  maliyet biliniyorsa). Olay sonrası `RequestPnL()`.
+- **Bildirim dedup:** OUTBID anahtarı (item, myPrice) — outbid olduğunda bir kez; tekrar en üste çıkınca
+  ya da emir kaybolunca sıfırlanır. UNDERCUT aynı desen (bugünkü DoUndercut her çalışmada tekrar bildiriyor —
+  periyodik olunca dedup şart). Yeniden başlatmada mevcut outbid bir kez daha bildirir (kabul).
+
+**Zamanlama:** fiyat poll'u ile aynı kadans (`PollOnce` → `DoOrders`, API key varsa) + "Yenile" düğmesi
+(`RequestOrders`). Döngü başına ~8 çağrı; 60 sn'de bile 300 burst / 5/s limitine göre önemsiz.
+Kullanıcı hızlı bildirim isterse poll aralığını düşürür — tek düğme, ikinci zamanlayıcı yok.
+
+**UI:** "Undercut" sekmesi → **"Emirlerim"**. Başlık: "Son kontrol: X sn · Açık: N alış / M satış ·
+Bu oturum: F dolum, S satış" + Yenile.
+- **Alış Emirlerim:** Item (kopyalanabilir) | Fiyatım | En İyi Alış | Fark | Önümde (≤) | Adet | Yaş |
+  Durum (EN ÜSTTE / OUTBID / GECİKTİ) | Öneri (tooltip: +1c yeni kâr, ROI, kâr/emir; beklenen süre).
+- **Satış Listelerim:** Item | Fiyatım | En Düşük | Altımda | Adet | Yaş | Durum (EN DÜŞÜK / UNDERCUT) |
+  Relist analizi (mevcut holdNet/relistNet/relistCost tooltip'i).
+- **Son Olaylar** (katlanabilir): son 20 dolum/satış, zamanıyla.
+- Bildirimler (Nexus alert): OUTBID, UNDERCUT, DOLDU, SATILDI — ayarlarda tek anahtar "Emir bildirimleri".
+
+**DÜZELTME (advisor, tasarım incelemesi):**
+1. **DoOrders'ın hata yolu yoktu — burada hata boş sütundan çok daha kötü.** `m_lastOk` tek bayrak; her
+   çağrıdan sonra ayrı kontrol şart. Aksi halde (a) boş `current/buys` = "tüm emirler gitti" → dedup
+   anahtarları sıfırlanır, API dönünce her outbid yeniden bildirir; (b) boş history sayfası `seenIds`'i `{}`
+   yapar → sonraki başarılı çekimde 200 kayıt "yeni dolum" = **200 DOLDU bildirimi**. Kural (5a
+   carry-forward ile aynı): herhangi bir çağrı başarısızsa önceki `OrdersSnapshot` korunur, `stale=true`,
+   seen kümeleri ve dedup anahtarlarına dokunulmaz. `OrderInputs.ok=false` → `Analyze` state'i değiştirmeden
+   `skipped` döner (unit test: seen={a,b}, ok=false → olay 0, seen aynı).
+2. **Açılış bildirim fırtınası:** 10 açık emrin 6'sı outbid ise yüklemede 6 Nexus alert'i. Fiyat alarmındaki
+   `m_firstPoll` çözümü: ilk DoOrders outbid/undercut anahtarlarını **bildirmeden tohumlar**; sekme mevcut
+   durumu gösterir, bildirimler *değişim* için. Ayrıca tür başına, kontrol başına toplama: "OUTBID: 3 emir —
+   X, Y, Z" (≤3 isim, sonra "+k"). DOLDU/SATILDI: item başına toplanır; > 3 item ise tek özet satırı.
+   Yeniden başlatma sonrası diskteki seen kümesine göre yeni dolum/satışlar (oyuncu yokken olanlar) **bildirir**
+   — gerçek yeni bilgi; toplama fırtınayı engeller.
+3. **200'lük batch:** yoğun seansta `current/buys ∪ current/sells` 200+ farklı item olabilir; `GetPrices/
+   GetListings` batch yapmaz → API 400. DoPnL'deki 200'lük döngü DoOrders'taki üç çağrıda da kullanılır.
+   Listings yalnızca açık emir item'ları için (ağır payload); history sayfasındaki item'lar için yalnızca prices.
+4. **Olay tetikli P&L artımlı:** DoPnL 50 sayfaya kadar çeker; `pnl_data.json` Start'ta yüklenir ve
+   `MergeTransactions` id ile birleştirir → dolum sonrası yenileme için yalnızca sayfa 0 yeter:
+   `DoPnL(bool incremental)`. Sekmedeki elle düğme tam çekim kalır.
+5. **Küme farkı koruması:** history `purchased` desc sıralı, kayıtlar yalnızca aşağı kayar → sayfa-0 kayması
+   neredeyse imkânsız, **200 sınırındaki eş-zaman damgası** hariç. Ek kemer: yeni olay için `purchased ≥ en
+   yeni görülen purchased` (time_t karşılaştırma). Bir karşılaştırma, hayalet-DOLDU vakasını öldürür.
+6. **GECİKTİ eşiği:** `beklenen` üst-sınır `boughtPerDay`'den → iyimser → `2×` likit item'larda relist
+   gürültüsüyle erken tetiklenir. **3×** kullanılır; tooltip 5b'nin kendi uyarısını tekrarlar.
+7. **Karar — `UndercutDetector` silinir:** OrderTracker aynı girdilerle üst-küme çıktı verir. `DoUndercut`,
+   `RequestUndercut`, `GetUndercutSnapshot`, `m_undercutRequested` ve her çalışmada yeniden bildiren eski
+   alert yolu kaldırılır; "Undercut" sekmesi "Emirlerim" olur.
+
+**Uygulama notları (advisor):** `OrderTracker::Analyze(OrderInputs, OrderState&)` tamamen saf (BookAnalyzer
+gibi) — views + events + alerts döner; tüm testler HTTP'siz. Worker'da `itemId→name` cache (isimler her
+5 dk yeniden çekilmesin). DOLDU metni `current/buys`'tan kalan adedi gösterir: "DOLDU: 120x X (emirde 130
+kaldı)". `Run()` başındaki ilk `PollOnce()` sonrasına `DoOrders()` da eklenir (ilk kontrol bir aralık
+beklemesin). `aheadQty` "en fazla" etiketi doğru — aynı kademede FIFO sırası API'den bilinemez. ISO-8601:
+tam `"2026-09-10T20:15:33+00:00"` ve `Z` biçimi test edilir; UTC için `_mkgmtime`.
+
+**Test:** `test_orders.cpp` — outbid + aheadQty; top == myPrice → outbid değil, ahead = aynı kademe − benim;
+undercut + unitsBelow + relist; tohum → 0 olay ve outbid varken bile bildirim yok; ikinci turda 2 yeni id
+aynı item → 1 toplanmış olay (parts=2) + DOLDU bildirimi; sıra değişimi → 0; eski zaman damgalı yeni id → 0;
+dedup: outbid → 1 bildirim, hâlâ outbid → 0, en üste dön → anahtar silinir, tekrar outbid → yeni bildirim;
+**ok=false → skipped, state aynı**; ISO-8601 (`+00:00`, `Z`, bozuk → 0); SATILDI net hesabı; state
+save/load roundtrip. `test_worker`: API key yokken DoOrders no-op, `hasChecked=false`, çökme yok.
+
+**Test sonuçları (11 Eyl 2026):**
+- `test_orders` 10/10: ISO-8601 (+00:00 / Z / bozuk) ✓, outbid + ahead üst sınır (30+20+30=80) + rebid 103 ✓,
+  en üstteyken ahead = aynı kademe − benim ✓, undercut + unitsBelow 12 + CalcRelist + beklenen 3.67 sa ✓,
+  tohum → 0 olay/0 bildirim (outbid varken bile) ✓, 2 yeni kayıt aynı item → 1 olay (120x, 2 parça,
+  "emirde 130 kaldi") ✓, sıra değişimi + eski damgalı yeni id → 0 ✓, SATILDI net = (NetRevenue−maliyet)×adet ✓,
+  4 item → tek özet bildirim ✓, dedup döngüsü (1 → 0 → anahtar silinir → 1) ✓, **ok=false → skipped, state
+  aynı** ✓, state save/load (keysSeeded sıfırlanır) ✓.
+- `test_worker` [7b]: API key yokken `RequestOrders` no-op — hasChecked=0, stale=0, `orders_state.json`
+  yazılmadı; 5a/5b/regresyon değişmedi. `test_book` 6/6, `test_volume` 13/13, `test_pnl` 6/6.
+- DLL v0.5. `UndercutDetector.h/.cpp` silindi (git rm commit'te).
+
+- [x] GW2ApiClient: `FetchTransactions(path, maxPages)` + `GetHistory{Buys,Sells}Page0`
+- [x] OrderTracker (saf Analyze + LoadState/SaveState atomik) + test_orders
+- [x] Worker: DoOrders (çağrı başına ok kontrolü, carry-forward, 200'lük batch, isim cache), OrdersSnapshot,
+      RequestOrders, `DoPnL(incremental)`, ilk PollOnce sonrası DoOrders; DoUndercut/RequestUndercut kaldırıldı
+- [x] UI: Emirlerim sekmesi (Alış Emirlerim 9 sütun, Satış Listelerim 8 sütun, Son Olaylar), ayarlarda
+      "Emir bildirimleri" anahtarı + poll tooltip; sürüm 0.5
+- [x] test_worker [7b]
+- [ ] Oyun içi: açık emirle Emirlerim sekmesi; bir alış emrini bilerek düşük ver → OUTBID; dolum → DOLDU
+      bildirimi + Son Olaylar + P&L artımlı yenileme

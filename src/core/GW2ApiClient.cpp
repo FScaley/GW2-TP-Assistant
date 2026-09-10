@@ -113,11 +113,11 @@ std::vector<ItemInfo> GW2ApiClient::GetItems(const std::vector<int>& itemIds) {
     return result;
 }
 
-std::vector<TransactionRecord> GW2ApiClient::FetchTransactions(const std::string& path) {
+std::vector<TransactionRecord> GW2ApiClient::FetchTransactions(const std::string& path, int maxPages) {
     std::vector<TransactionRecord> result;
-    if (m_apiKey.empty()) return result;
+    if (m_apiKey.empty()) { m_lastOk = false; return result; }
 
-    for (int page = 0; page < 50; ++page) {
+    for (int page = 0; page < maxPages; ++page) {
         std::string fullPath = path + "?access_token=" + m_apiKey
             + "&page=" + std::to_string(page) + "&page_size=200";
         auto resp = m_http.Get(API_HOST, fullPath);
@@ -144,10 +144,19 @@ std::vector<TransactionRecord> GW2ApiClient::FetchTransactions(const std::string
             }
             if (j.size() < 200) break;
         } catch (...) {
+            if (page == 0) m_lastOk = false;
             break;
         }
     }
     return result;
+}
+
+std::vector<TransactionRecord> GW2ApiClient::GetHistorySellsPage0() {
+    return FetchTransactions("/v2/commerce/transactions/history/sells", 1);
+}
+
+std::vector<TransactionRecord> GW2ApiClient::GetHistoryBuysPage0() {
+    return FetchTransactions("/v2/commerce/transactions/history/buys", 1);
 }
 
 std::vector<TransactionRecord> GW2ApiClient::GetCurrentSells() {

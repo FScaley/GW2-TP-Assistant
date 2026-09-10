@@ -33,6 +33,8 @@ price_history/
 pnl_data.json
 volume_history.json
 volume_history.json.tmp
+orders_state.json
+orders_state.json.tmp
 
 # Dependencies (download locally)
 vendor/

@@ -14,7 +14,6 @@
 #include "core/ConfigManager.h"
 #include "core/Worker.h"
 #include "modules/PnLTracker.h"
-#include "modules/UndercutDetector.h"
 
 void AddonLoad(AddonAPI_t* aApi);
 void AddonUnload();
@@ -51,7 +50,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 4;
+    AddonDef.Version.Minor = 5;
     AddonDef.Version.Build = 0;
     AddonDef.Version.Revision = 1;
     AddonDef.Author = "Onur";
@@ -98,7 +97,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->GUI_Register(RT_Render, AddonRender);
     APIDefs->GUI_Register(RT_OptionsRender, AddonOptions);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.4 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.5 loaded.");
 }
 
 void AddonUnload() {
@@ -200,6 +199,15 @@ static std::string FormatHours(double h) {
     if (h < 1.0)       snprintf(buf, sizeof(buf), "~%d dk", (int)(h * 60.0 + 0.5));
     else if (h < 48.0) snprintf(buf, sizeof(buf), "~%.0f sa", h);
     else               snprintf(buf, sizeof(buf), "~%.1f gun", h / 24.0);
+    return buf;
+}
+
+// Plain elapsed time (no "~": this is measured, not estimated)
+static std::string FormatAge(double h) {
+    char buf[32];
+    if (h < 1.0)       snprintf(buf, sizeof(buf), "%d dk", (int)(h * 60.0 + 0.5));
+    else if (h < 48.0) snprintf(buf, sizeof(buf), "%.1f sa", h);
+    else               snprintf(buf, sizeof(buf), "%.1f gun", h / 24.0);
     return buf;
 }
 
@@ -696,44 +704,183 @@ void AddonRender() {
                 ImGui::EndTabItem();
             }
 
-            // ===== TAB 3: Undercut — render only reads snapshot =====
-            if (ImGui::BeginTabItem("Undercut")) {
+            // ===== TAB 3: Emirlerim — my orders vs market + fills/sales; render only reads snapshot =====
+            if (ImGui::BeginTabItem("Emirlerim")) {
+                const ImVec4 red(0.9f, 0.3f, 0.2f, 1.0f), green(0.2f, 0.9f, 0.3f, 1.0f);
+                const ImVec4 orange(0.9f, 0.6f, 0.2f, 1.0f), yellow(0.9f, 0.8f, 0.2f, 1.0f);
                 if (!g_api->HasApiKey()) {
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f),
-                        "API Key gerekli — Nexus ayarlarindan gir");
+                    ImGui::TextColored(orange, "API Key gerekli — Nexus ayarlarindan gir");
                 } else {
-                    if (ImGui::Button("Kontrol Et"))
-                        g_worker->RequestUndercut();
+                    auto os = g_worker->GetOrdersSnapshot();
+                    int minPPO = g_config ? g_config->GetMinProfitPerOrder() : 30000;
 
-                    auto undercuts = g_worker->GetUndercutSnapshot();
-                    if (undercuts.empty()) {
-                        ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f),
-                            "Undercut yok — emirlerin guvenli");
+                    if (ImGui::Button("Yenile")) g_worker->RequestOrders();
+                    ImGui::SameLine();
+                    if (!os.hasChecked) {
+                        ImGui::TextDisabled("%s", os.stale ? "Kontrol basarisiz — API hatasi" : "Kontrol ediliyor...");
                     } else {
-                        ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f),
-                            "%d itemde undercut!", (int)undercuts.size());
-                        ImGui::Separator();
+                        int secs = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now() - os.lastCheck).count());
+                        ImGui::TextDisabled("Son kontrol: %d sn once", secs);
+                        if (os.stale) { ImGui::SameLine(); ImGui::TextColored(orange, "(son deneme basarisiz — eski veri)"); }
+                    }
+                    ImGui::Text("Acik: %d alis / %d satis   |   Bu oturum: %d dolum, %d satis",
+                                (int)os.buys.size(), (int)os.sells.size(), os.sessionFills, os.sessionSales);
+                    ImGui::Separator();
 
-                        for (auto& u : undercuts) {
-                            ImGui::PushID(u.itemId);
-                            CopyableName(u.itemName.empty() ? "Item #" + std::to_string(u.itemId) : u.itemName,
-                                         ImVec4(0.9f, 0.6f, 0.2f, 1.0f));
-                            ImGui::Text("  Senin: %s | En dusuk: %s | Altinda: %s birim",
-                                ProfitEngine::FormatCopper(u.myPrice).c_str(),
-                                ProfitEngine::FormatCopper(u.lowestPrice).c_str(),
-                                FormatQty(u.unitsBelow).c_str());
-
-                            if (u.relist.relistLoss) {
-                                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f),
-                                    "  RELIST ZARAR — BEKLE");
-                            } else {
-                                ImGui::Text("  Bekle: %s | Relist: %s | Maliyet: %s",
-                                    ProfitEngine::FormatCopper(u.relist.holdNet).c_str(),
-                                    ProfitEngine::FormatCopper(u.relist.relistNet).c_str(),
-                                    ProfitEngine::FormatCopper(u.relist.relistCost).c_str());
+                    // ---- Alis emirlerim
+                    ImGui::Text("Alis Emirlerim (%d)", (int)os.buys.size());
+                    if (os.buys.empty()) {
+                        ImGui::TextDisabled("  Acik alis emri yok.");
+                    } else if (ImGui::BeginTable("##mybuys", 9,
+                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_SizingStretchProp)) {
+                        ImGui::TableSetupColumn("Item", 0, 2.6f);
+                        ImGui::TableSetupColumn("Fiyatim", 0, 1.0f);
+                        ImGui::TableSetupColumn("En Iyi Alis", 0, 1.0f);
+                        ImGui::TableSetupColumn("Fark", 0, 0.8f);
+                        ImGui::TableSetupColumn("Onumde", 0, 0.8f);
+                        ImGui::TableSetupColumn("Adet", 0, 0.6f);
+                        ImGui::TableSetupColumn("Yas", 0, 0.7f);
+                        ImGui::TableSetupColumn("Durum", 0, 1.0f);
+                        ImGui::TableSetupColumn("Oneri", 0, 1.7f);
+                        ImGui::TableHeadersRow();
+                        for (auto& v : os.buys) {
+                            ImGui::TableNextRow();
+                            ImGui::PushID(v.itemId); ImGui::PushID(v.myPrice);
+                            ImGui::TableNextColumn(); CopyableName(v.itemName, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                            ImGui::TableNextColumn(); ImGui::Text("%s", ProfitEngine::FormatCopper(v.myPrice).c_str());
+                            ImGui::TableNextColumn(); ImGui::TextColored(v.outbid ? red : green, "%s", ProfitEngine::FormatCopper(v.topBuy).c_str());
+                            ImGui::TableNextColumn();
+                            if (v.outbid) ImGui::TextColored(red, "-%s", ProfitEngine::FormatCopper(v.outbidBy).c_str());
+                            else ImGui::TextColored(green, "0");
+                            ImGui::TableNextColumn();
+                            if (v.hasBook) {
+                                ImGui::Text("<= %s", FormatQty(v.aheadQty).c_str());
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Daha yuksek tekliflerdeki birimler + ayni fiyattaki digerleri.\n"
+                                                      "Ayni kademede sira API'den bilinmez -> ust sinir.");
+                            } else ImGui::TextDisabled("--");
+                            ImGui::TableNextColumn(); ImGui::Text("%d", v.myQty);
+                            ImGui::TableNextColumn();
+                            ImGui::TextColored(v.delayed ? orange : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s", FormatAge(v.ageHours).c_str());
+                            if (ImGui::IsItemHovered()) {
+                                if (v.expectedHours > 0)
+                                    ImGui::SetTooltip("Beklenen dolma: %s (5b hacminden, iyimser)\nGECIKTI = yas > 3x beklenen.", FormatHours(v.expectedHours).c_str());
+                                else
+                                    ImGui::SetTooltip("Beklenen sure icin bu item'in >= 2 sa hacim verisi gerekir\n(Flip Tracker izleme listesinde olmali).");
                             }
-                            ImGui::Separator();
-                            ImGui::PopID();
+                            ImGui::TableNextColumn();
+                            if (v.outbid) ImGui::TextColored(red, "OUTBID");
+                            else if (v.delayed) ImGui::TextColored(orange, "GECIKTI");
+                            else ImGui::TextColored(green, "EN USTTE");
+                            ImGui::TableNextColumn();
+                            if (v.outbid && v.lowestSell > 0) {
+                                int orderProfit = v.rebidFlip.profit * v.myQty;
+                                ImVec4 c = v.rebidFlip.profit <= 0 ? red : orderProfit >= minPPO ? green : yellow;
+                                if (v.rebidFlip.profit <= 0)
+                                    ImGui::TextColored(c, "%s -> ZARAR, bekle", ProfitEngine::FormatCopper(v.rebidPrice).c_str());
+                                else
+                                    ImGui::TextColored(c, "%s -> %s (%.0f%%)", ProfitEngine::FormatCopper(v.rebidPrice).c_str(),
+                                                       ProfitEngine::FormatCopper(v.rebidFlip.profit).c_str(), v.rebidFlip.roi);
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("En iyi alisin 1c ustune cikarsan:\n"
+                                                      "birim kar %s, emir kari %s (%d adet), ROI %.1f%%\n"
+                                                      "Satis varsayimi: en dusuk liste %s. Iptal ucretsiz, yeniden ver.",
+                                                      ProfitEngine::FormatCopper(v.rebidFlip.profit).c_str(),
+                                                      ProfitEngine::FormatCopper(orderProfit).c_str(), v.myQty, v.rebidFlip.roi,
+                                                      ProfitEngine::FormatCopper(v.lowestSell).c_str());
+                            } else ImGui::TextDisabled("--");
+                            ImGui::PopID(); ImGui::PopID();
+                        }
+                        ImGui::EndTable();
+                    }
+
+                    ImGui::Spacing();
+                    // ---- Satis listelerim
+                    ImGui::Text("Satis Listelerim (%d)", (int)os.sells.size());
+                    if (os.sells.empty()) {
+                        ImGui::TextDisabled("  Acik satis listesi yok.");
+                    } else if (ImGui::BeginTable("##mysells", 8,
+                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_SizingStretchProp)) {
+                        ImGui::TableSetupColumn("Item", 0, 2.6f);
+                        ImGui::TableSetupColumn("Fiyatim", 0, 1.0f);
+                        ImGui::TableSetupColumn("En Dusuk", 0, 1.0f);
+                        ImGui::TableSetupColumn("Altimda", 0, 0.8f);
+                        ImGui::TableSetupColumn("Adet", 0, 0.6f);
+                        ImGui::TableSetupColumn("Yas", 0, 0.7f);
+                        ImGui::TableSetupColumn("Durum", 0, 1.0f);
+                        ImGui::TableSetupColumn("Relist", 0, 1.9f);
+                        ImGui::TableHeadersRow();
+                        for (auto& v : os.sells) {
+                            ImGui::TableNextRow();
+                            ImGui::PushID(v.itemId); ImGui::PushID(v.myPrice);
+                            ImGui::TableNextColumn(); CopyableName(v.itemName, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                            ImGui::TableNextColumn(); ImGui::Text("%s", ProfitEngine::FormatCopper(v.myPrice).c_str());
+                            ImGui::TableNextColumn(); ImGui::TextColored(v.undercut ? red : green, "%s", ProfitEngine::FormatCopper(v.lowestSell).c_str());
+                            ImGui::TableNextColumn();
+                            if (v.hasBook) ImGui::Text("%s", FormatQty(v.unitsBelow).c_str());
+                            else ImGui::TextDisabled("--");
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Benim listem siraya gelmeden once satilmasi gereken birim.");
+                            ImGui::TableNextColumn(); ImGui::Text("%d", v.myQty);
+                            ImGui::TableNextColumn(); ImGui::Text("%s", FormatAge(v.ageHours).c_str());
+                            if (ImGui::IsItemHovered() && v.expectedHours > 0)
+                                ImGui::SetTooltip("Beklenen satis: %s (5b hacminden, iyimser)", FormatHours(v.expectedHours).c_str());
+                            ImGui::TableNextColumn();
+                            if (v.undercut) ImGui::TextColored(red, "UNDERCUT");
+                            else ImGui::TextColored(green, "EN DUSUK");
+                            ImGui::TableNextColumn();
+                            if (!v.undercut) {
+                                ImGui::TextDisabled("--");
+                            } else if (v.avgCost <= 0) {
+                                ImGui::TextDisabled("maliyet bilinmiyor");
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("P&L'de bu item icin alim kaydi yok (90 gun API gecmisi).");
+                            } else if (v.relist.relistLoss) {
+                                ImGui::TextColored(red, "RELIST ZARAR — BEKLE");
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Maliyet %s. %s'ye relist net %s -> zarar.\nBekle: %s net.",
+                                                      ProfitEngine::FormatCopper(v.avgCost).c_str(),
+                                                      ProfitEngine::FormatCopper(v.lowestSell - 1).c_str(),
+                                                      ProfitEngine::FormatCopper(v.relist.relistNet).c_str(),
+                                                      ProfitEngine::FormatCopper(v.relist.holdNet).c_str());
+                            } else {
+                                ImGui::Text("Bekle %s | Relist %s",
+                                            ProfitEngine::FormatCopper(v.relist.holdNet).c_str(),
+                                            ProfitEngine::FormatCopper(v.relist.relistNet).c_str());
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Maliyet %s (FIFO). Beklersen net %s/birim; %s'ye relist net %s/birim,\n"
+                                                      "relist bedeli (yeni %%5 listeleme ucreti) %s/birim.",
+                                                      ProfitEngine::FormatCopper(v.avgCost).c_str(),
+                                                      ProfitEngine::FormatCopper(v.relist.holdNet).c_str(),
+                                                      ProfitEngine::FormatCopper(v.lowestSell - 1).c_str(),
+                                                      ProfitEngine::FormatCopper(v.relist.relistNet).c_str(),
+                                                      ProfitEngine::FormatCopper(v.relist.relistCost).c_str());
+                            }
+                            ImGui::PopID(); ImGui::PopID();
+                        }
+                        ImGui::EndTable();
+                    }
+
+                    ImGui::Spacing();
+                    // ---- Son olaylar (persisted across restarts)
+                    char evHeader[64];
+                    snprintf(evHeader, sizeof(evHeader), "Son Olaylar (%d)###events", (int)os.recentEvents.size());
+                    if (ImGui::CollapsingHeader(evHeader)) {
+                        if (os.recentEvents.empty()) ImGui::TextDisabled("  Henuz dolum/satis yok.");
+                        for (auto& e : os.recentEvents) {
+                            bool filled = e.type == OrderEvent::Filled;
+                            ImGui::TextColored(filled ? ImVec4(0.4f, 0.7f, 1.0f, 1.0f) : green, "%s", filled ? "DOLDU  " : "SATILDI");
+                            ImGui::SameLine();
+                            ImGui::Text("%s  %dx %s @ %s", OrderTracker::FormatWhen(e.when).c_str(), e.qty,
+                                        e.itemName.c_str(), ProfitEngine::FormatCopper(e.price).c_str());
+                            if (!filled && e.netKnown) {
+                                ImGui::SameLine();
+                                ImGui::TextColored(e.net >= 0 ? green : red, "net %s%s", e.net >= 0 ? "+" : "",
+                                                   ProfitEngine::FormatCopper(e.net).c_str());
+                            }
+                            if (filled && e.remaining > 0) { ImGui::SameLine(); ImGui::TextDisabled("(emirde %d kaldi)", e.remaining); }
+                            if (e.parts > 1) { ImGui::SameLine(); ImGui::TextDisabled("[%d parca]", e.parts); }
                         }
                     }
                 }
@@ -748,7 +895,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.4");
+    ImGui::Text("TP Assistant v0.5");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";
@@ -777,6 +924,19 @@ void AddonOptions() {
             g_config->Save(g_configPath);
         }
     }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fiyatlar ve emirlerim bu aralikla kontrol edilir.\nBildirim gecikmesi = aralik + API cache (dakikalar).");
+
+    bool orderAlerts = g_config ? g_config->GetOrderAlerts() : true;
+    if (ImGui::Checkbox("Emir bildirimleri (OUTBID / UNDERCUT / DOLDU / SATILDI)", &orderAlerts)) {
+        if (g_config) {
+            g_config->SetOrderAlerts(orderAlerts);
+            g_config->Save(g_configPath);
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Emirlerim sekmesi durumu her zaman gosterir; bu yalnizca Nexus bildirimlerini acar/kapar.\n"
+                          "Degisimde bir kez bildirir, acilista sessizce tohumlar.");
 
     ImGui::Separator();
     ImGui::TextDisabled("Emir ekonomisi");

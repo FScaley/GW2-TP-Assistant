@@ -21,6 +21,8 @@ bool ConfigManager::Load(const std::string& path) {
             m_positionCapital.store(j["position_capital"].get<int>());
         if (j.contains("min_profit_per_order"))
             m_minProfitPerOrder.store(j["min_profit_per_order"].get<int>());
+        if (j.contains("order_alerts"))
+            m_orderAlerts.store(j["order_alerts"].get<bool>());
 
         m_watchlist.clear();
         if (j.contains("watchlist")) {
@@ -45,6 +47,7 @@ bool ConfigManager::Save(const std::string& path) {
     j["poll_interval_sec"] = m_pollInterval.load();
     j["position_capital"] = m_positionCapital.load();
     j["min_profit_per_order"] = m_minProfitPerOrder.load();
+    j["order_alerts"] = m_orderAlerts.load();
 
     json wl = json::array();
     for (auto& item : m_watchlist) {

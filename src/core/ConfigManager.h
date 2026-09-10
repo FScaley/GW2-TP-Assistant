@@ -28,6 +28,10 @@ public:
     int GetMinProfitPerOrder() const { return m_minProfitPerOrder.load(); }
     void SetMinProfitPerOrder(int copper) { m_minProfitPerOrder.store(copper); }
 
+    // Nexus alerts for OUTBID / UNDERCUT / DOLDU / SATILDI (the Emirlerim tab always shows state).
+    bool GetOrderAlerts() const { return m_orderAlerts.load(); }
+    void SetOrderAlerts(bool on) { m_orderAlerts.store(on); }
+
     std::vector<WatchlistItem> GetWatchlist() const;
     void SetWatchlist(const std::vector<WatchlistItem>& list);
     void AddToWatchlist(int id, const std::string& name);
@@ -42,5 +46,6 @@ private:
     std::atomic<int> m_pollInterval{300}; // 5 minutes
     std::atomic<int> m_positionCapital{200000};   // 20g
     std::atomic<int> m_minProfitPerOrder{30000};  // 3g
+    std::atomic<bool> m_orderAlerts{true};
     std::vector<WatchlistItem> m_watchlist;
 };
