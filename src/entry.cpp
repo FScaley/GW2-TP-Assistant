@@ -3,6 +3,7 @@
 #include <sstream>
 #include <chrono>
 #include <filesystem>
+#include <algorithm>
 
 #include "nexus/Nexus.h"
 #include "mumble/Mumble.h"
@@ -122,6 +123,40 @@ void AddonUnload() {
     APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant unloaded.");
 }
 
+static void CopyToClipboard(const std::string& utf8) {
+    if (!OpenClipboard(nullptr)) return;
+    EmptyClipboard();
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (wlen > 0) {
+        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, wlen * sizeof(wchar_t));
+        if (h) {
+            MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, (wchar_t*)GlobalLock(h), wlen);
+            GlobalUnlock(h);
+            if (!SetClipboardData(CF_UNICODETEXT, h)) GlobalFree(h);
+        }
+    }
+    CloseClipboard();
+}
+
+static std::string g_copiedName;
+static std::chrono::steady_clock::time_point g_copiedAt;
+
+// Item name as a clickable cell: click copies it so the user can paste into the TP search.
+static void CopyableName(const std::string& name, ImVec4 color) {
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    if (ImGui::Selectable(name.c_str(), false)) {
+        CopyToClipboard(name);
+        g_copiedName = name;
+        g_copiedAt = std::chrono::steady_clock::now();
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        bool justCopied = g_copiedName == name &&
+            std::chrono::steady_clock::now() - g_copiedAt < std::chrono::milliseconds(1500);
+        ImGui::SetTooltip(justCopied ? "Kopyalandi!" : "Tikla: ismi kopyala (TP'de aratmak icin)");
+    }
+}
+
 static ImVec4 RoiColor(double roi) {
     if (roi > 5.0)  return ImVec4(0.2f, 0.9f, 0.3f, 1.0f);
     if (roi > 0.0)  return ImVec4(0.9f, 0.8f, 0.2f, 1.0f);
@@ -137,32 +172,119 @@ static void FireAlerts() {
     }
 }
 
-static void RenderWatchlistTable(const WatchlistSnapshot& snap) {
-    if (ImGui::BeginTable("##watchlist", 7,
+static std::string FormatQty(int qty) {
+    if (qty >= 1000000) return std::to_string(qty / 1000000) + "." + std::to_string((qty % 1000000) / 100000) + "M";
+    if (qty >= 1000) return std::to_string(qty / 1000) + "." + std::to_string((qty % 1000) / 100) + "K";
+    return std::to_string(qty);
+}
+
+static bool g_hideNoMarket = true;
+static bool g_hideLowProfit = true;
+
+// Buy side looks dead: almost nobody keeps buy orders open because they never fill.
+// Heuristic catches Bag of Radiant Energy / Brilliant Opal Jewel (GW2BLTC Bought = 2 and 8/day).
+static bool BuySideRisky(const PriceData& p) {
+    return p.buyQty < 1000 && p.sellQty > 3 * p.buyQty;
+}
+
+static void RenderWatchlistTable(WatchlistSnapshot snap) {
+    int minPPO = g_config ? g_config->GetMinProfitPerOrder() : 30000;
+    int noMarketCount = 0, lowProfitCount = 0;
+    for (auto& e : snap.entries) {
+        if (e.hasData && !e.hasMarket) noMarketCount++;
+        else if (e.hasData && e.profitPerOrder < minPPO) lowProfitCount++;
+    }
+
+    ImGui::Checkbox("Dusuk kar/emir gizle", &g_hideLowProfit);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Kar/Emir = birim kar x min(250, emir sermayesi / alis)\n"
+                          "Esik ve emir sermayesi Nexus ayarlarinda.\n"
+                          "Gunluk hacim (Sold/Bought) API'de yok — GW2BLTC'den kontrol et.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(esik %s, %d gizli)", ProfitEngine::FormatCopper(minPPO).c_str(), lowProfitCount);
+    if (noMarketCount > 0) {
+        ImGui::SameLine();
+        ImGui::Checkbox("Piyasasi olmayanlari gizle", &g_hideNoMarket);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d)", noMarketCount);
+    }
+
+    if (ImGui::BeginTable("##watchlist", 10,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-        ImGuiTableFlags_SizingStretchProp))
+        ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingStretchProp))
     {
-        ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_NoSort, 3.0f);
+        ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_PreferSortDescending, 3.0f);
         ImGui::TableSetupColumn("Alis", ImGuiTableColumnFlags_NoSort, 1.0f);
         ImGui::TableSetupColumn("Satis", ImGuiTableColumnFlags_NoSort, 1.0f);
-        ImGui::TableSetupColumn("Kar", ImGuiTableColumnFlags_None, 1.0f);
-        ImGui::TableSetupColumn("ROI", ImGuiTableColumnFlags_NoSort, 1.0f);
-        ImGui::TableSetupColumn("Durum", ImGuiTableColumnFlags_NoSort, 1.0f);
-        ImGui::TableSetupColumn("##sil", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoResize, 0.4f);
+        ImGui::TableSetupColumn("Kar", ImGuiTableColumnFlags_PreferSortDescending, 1.0f);
+        ImGui::TableSetupColumn("ROI", ImGuiTableColumnFlags_PreferSortDescending, 0.9f);
+        ImGui::TableSetupColumn("Kar/Emir", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_DefaultSort, 1.2f);
+        ImGui::TableSetupColumn("Talep", ImGuiTableColumnFlags_PreferSortDescending, 0.8f);
+        ImGui::TableSetupColumn("Arz", ImGuiTableColumnFlags_PreferSortDescending, 0.8f);
+        ImGui::TableSetupColumn("Durum", ImGuiTableColumnFlags_NoSort, 1.1f);
+        ImGui::TableSetupColumn("##sil", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoResize, 0.3f);
         ImGui::TableHeadersRow();
 
+        // Snapshot is a fresh (unsorted) copy every frame — sort whenever a spec is active,
+        // not only on SpecsDirty, otherwise the order resets the frame after a header click.
+        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs()) {
+            if (sortSpecs->SpecsCount > 0) {
+                auto spec = sortSpecs->Specs[0];
+                bool asc = spec.SortDirection == ImGuiSortDirection_Ascending;
+                std::stable_sort(snap.entries.begin(), snap.entries.end(),
+                    [spec, asc](const WatchlistSnapshot::Entry& a, const WatchlistSnapshot::Entry& b) {
+                        // rows without a market always sink to the bottom
+                        if (a.hasMarket != b.hasMarket) return a.hasMarket;
+                        int cmp = 0;
+                        switch (spec.ColumnIndex) {
+                            case 0: cmp = a.name.compare(b.name); break;
+                            case 3: cmp = (a.flip.profit > b.flip.profit) - (a.flip.profit < b.flip.profit); break;
+                            case 4: cmp = (a.flip.roi > b.flip.roi) - (a.flip.roi < b.flip.roi); break;
+                            case 5: cmp = (a.profitPerOrder > b.profitPerOrder) - (a.profitPerOrder < b.profitPerOrder); break;
+                            case 6: cmp = (a.price.buyQty > b.price.buyQty) - (a.price.buyQty < b.price.buyQty); break;
+                            case 7: cmp = (a.price.sellQty > b.price.sellQty) - (a.price.sellQty < b.price.sellQty); break;
+                            default: return false;
+                        }
+                        return asc ? cmp < 0 : cmp > 0;
+                    });
+                sortSpecs->SpecsDirty = false;
+            }
+        }
+
         for (auto& e : snap.entries) {
+            if (g_hideNoMarket && e.hasData && !e.hasMarket) continue;
+            if (g_hideLowProfit && e.hasData && e.hasMarket && e.profitPerOrder < minPPO) continue;
+
             ImGui::TableNextRow();
             ImGui::PushID(e.itemId);
 
             ImGui::TableNextColumn();
-            ImGui::Text("%s", e.name.c_str());
+            CopyableName(e.name, ImGui::GetStyleColorVec4(
+                (e.hasData && !e.hasMarket) ? ImGuiCol_TextDisabled : ImGuiCol_Text));
+
+            if (e.hasData && !e.hasMarket) {
+                ImGui::TableNextColumn();
+                if (e.price.buyQty > 0) ImGui::TextDisabled("%s", ProfitEngine::FormatCopper(e.price.buyPrice).c_str());
+                else ImGui::TextDisabled("--");
+                ImGui::TableNextColumn();
+                if (e.price.sellQty > 0) ImGui::TextDisabled("%s", ProfitEngine::FormatCopper(e.price.sellPrice).c_str());
+                else ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("%s", FormatQty(e.price.buyQty).c_str());
+                ImGui::TableNextColumn(); ImGui::TextDisabled("%s", FormatQty(e.price.sellQty).c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                    e.price.sellQty == 0 ? "ARZ YOK" : "TALEP YOK");
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("X")) g_removeItemId = e.itemId;
+                ImGui::PopID();
+                continue;
+            }
 
             if (!e.hasData) {
-                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
-                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
-                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
-                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                for (int i = 0; i < 7; ++i) { ImGui::TableNextColumn(); ImGui::TextDisabled("--"); }
                 ImGui::TableNextColumn(); ImGui::TextDisabled("Veri yok");
                 ImGui::TableNextColumn();
                 if (ImGui::SmallButton("X")) g_removeItemId = e.itemId;
@@ -183,13 +305,41 @@ static void RenderWatchlistTable(const WatchlistSnapshot& snap) {
             ImGui::TableNextColumn();
             ImGui::TextColored(col, "%.1f%%", e.flip.roi);
 
+            // Kar/Emir — what one order actually earns at the position cap
             ImGui::TableNextColumn();
-            if (e.flip.roi > 5.0)
-                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "KARLI");
-            else if (e.flip.roi > 0.0)
-                ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1.0f), "MARJINAL");
-            else
+            ImVec4 ppoCol = e.profitPerOrder >= minPPO ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)
+                          : e.profitPerOrder > 0      ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)
+                                                       : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);
+            ImGui::TextColored(ppoCol, "%s", ProfitEngine::FormatCopper(e.profitPerOrder).c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%d adet x %s", e.orderQty, ProfitEngine::FormatCopper(e.flip.profit).c_str());
+
+            // Talep (buy orders = alici kuyrugu)
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", FormatQty(e.price.buyQty).c_str());
+
+            // Arz (sell listings = satici kuyrugu)
+            ImGui::TableNextColumn();
+            float ratio = e.price.buyQty > 0 ? (float)e.price.sellQty / e.price.buyQty : 99.0f;
+            ImVec4 supplyCol = ratio < 1.0f ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)  // talep > arz = iyi
+                             : ratio < 3.0f ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)  // dengeli
+                             : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);                 // arz baskın = kuyruk uzun
+            ImGui::TextColored(supplyCol, "%s", FormatQty(e.price.sellQty).c_str());
+
+            ImGui::TableNextColumn();
+            if (e.flip.roi <= 0.0)
                 ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f), "ZARAR");
+            else if (BuySideRisky(e.price)) {
+                ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "ALIM RISKLI");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Talep derinligi cok dusuk (%s) — alis emri dolmayabilir.\n"
+                                      "Genis spread'in sebebi bu olabilir. GW2BLTC'de Bought/gun kontrol et.",
+                                      FormatQty(e.price.buyQty).c_str());
+            }
+            else if (e.flip.roi > 5.0)
+                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "KARLI");
+            else
+                ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1.0f), "MARJINAL");
 
             ImGui::TableNextColumn();
             if (ImGui::SmallButton("X")) g_removeItemId = e.itemId;
@@ -288,38 +438,73 @@ void AddonRender() {
 
                     auto pnl = g_worker->GetPnLSnapshot();
                     if (!pnl.entries.empty()) {
-                        ImVec4 profitCol = pnl.totalProfit >= 0
+                        // Filter toggle
+                        static bool showFlipsOnly = true;
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Sadece alsat", &showFlipsOnly);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Isaretle: sadece TP'den alip sattiklarin\nKaldir: farming satislari dahil tumu");
+
+                        // Calculate filtered total
+                        int filteredProfit = 0;
+                        int flipCount = 0;
+                        for (auto& e : pnl.entries) {
+                            if (e.ignored) continue;
+                            bool isFlip = e.matchedQty > 0;
+                            if (showFlipsOnly && !isFlip) continue;
+                            filteredProfit += e.netProfit;
+                            flipCount++;
+                        }
+
+                        ImGui::SameLine();
+                        ImVec4 profitCol = filteredProfit >= 0
                             ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)
                             : ImVec4(0.9f, 0.3f, 0.2f, 1.0f);
-                        ImGui::SameLine();
                         ImGui::TextColored(profitCol, "Toplam: %s",
-                            ProfitEngine::FormatCopper(pnl.totalProfit).c_str());
+                            ProfitEngine::FormatCopper(filteredProfit).c_str());
                         ImGui::SameLine();
-                        ImGui::TextDisabled("(%s)", pnl.lastUpdated.c_str());
+                        ImGui::TextDisabled("(%d item, %s)", flipCount, pnl.lastUpdated.c_str());
 
                         ImGui::Separator();
                         if (ImGui::BeginTable("##pnl", 7,
                             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp))
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable |
+                            ImGuiTableFlags_SizingStretchProp))
                         {
-                            ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_None, 3.0f);
-                            ImGui::TableSetupColumn("Eslesen", ImGuiTableColumnFlags_None, 0.8f);
-                            ImGui::TableSetupColumn("Satilan", ImGuiTableColumnFlags_None, 0.8f);
-                            ImGui::TableSetupColumn("Ort. Alis", ImGuiTableColumnFlags_None, 1.0f);
-                            ImGui::TableSetupColumn("Net Kar", ImGuiTableColumnFlags_None, 1.2f);
-                            ImGui::TableSetupColumn("Eslesmeyen", ImGuiTableColumnFlags_None, 0.8f);
-                            ImGui::TableSetupColumn("##ign", ImGuiTableColumnFlags_None, 0.4f);
+                            ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_NoSort, 3.0f);
+                            ImGui::TableSetupColumn("Alim", ImGuiTableColumnFlags_NoSort, 0.8f);
+                            ImGui::TableSetupColumn("Satim", ImGuiTableColumnFlags_NoSort, 0.8f);
+                            ImGui::TableSetupColumn("Ort. Alis", ImGuiTableColumnFlags_NoSort, 1.0f);
+                            ImGui::TableSetupColumn("Net Kar", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 1.2f);
+                            ImGui::TableSetupColumn("Eslesmeyen", ImGuiTableColumnFlags_NoSort, 0.8f);
+                            ImGui::TableSetupColumn("##ign", ImGuiTableColumnFlags_NoSort, 0.4f);
                             ImGui::TableHeadersRow();
 
-                            for (auto& e : pnl.entries) {
+                            // Sort by Net Kar
+                            auto sortedEntries = pnl.entries;
+                            if (ImGuiTableSortSpecs* ss = ImGui::TableGetSortSpecs()) {
+                                if (ss->SpecsCount > 0) {
+                                    bool asc = ss->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
+                                    std::stable_sort(sortedEntries.begin(), sortedEntries.end(),
+                                        [asc](const PnLEntry& a, const PnLEntry& b) {
+                                            return asc ? a.netProfit < b.netProfit : a.netProfit > b.netProfit;
+                                        });
+                                    ss->SpecsDirty = false;
+                                }
+                            }
+
+                            for (auto& e : sortedEntries) {
+                                bool isFlip = e.matchedQty > 0;
+                                if (showFlipsOnly && !isFlip) continue;
+
                                 ImGui::TableNextRow();
                                 ImGui::PushID(e.itemId);
 
                                 ImGui::TableNextColumn();
-                                const char* name = e.itemName.empty()
-                                    ? std::to_string(e.itemId).c_str() : e.itemName.c_str();
-                                if (e.ignored) ImGui::TextDisabled("%s", name);
-                                else ImGui::Text("%s", name);
+                                std::string nameStr = e.itemName.empty()
+                                    ? std::to_string(e.itemId) : e.itemName;
+                                CopyableName(nameStr, ImGui::GetStyleColorVec4(
+                                    e.ignored ? ImGuiCol_TextDisabled : ImGuiCol_Text));
 
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%d", e.matchedQty);
@@ -328,7 +513,10 @@ void AddonRender() {
                                 ImGui::Text("%d", e.totalSold);
 
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%s", ProfitEngine::FormatCopper(e.avgBuyPrice).c_str());
+                                if (e.avgBuyPrice > 0)
+                                    ImGui::Text("%s", ProfitEngine::FormatCopper(e.avgBuyPrice).c_str());
+                                else
+                                    ImGui::TextDisabled("--");
 
                                 ImGui::TableNextColumn();
                                 ImVec4 col = e.netProfit >= 0
@@ -350,7 +538,7 @@ void AddonRender() {
                                 if (ImGui::Checkbox("##ign", &ign))
                                     g_worker->SetPnLIgnored(e.itemId, ign);
                                 if (ImGui::IsItemHovered())
-                                    ImGui::SetTooltip("Kisisel alis — kar hesabindan cikar");
+                                    ImGui::SetTooltip("Kar hesabindan cikar");
 
                                 ImGui::PopID();
                             }
@@ -383,8 +571,8 @@ void AddonRender() {
 
                         for (auto& u : undercuts) {
                             ImGui::PushID(u.itemId);
-                            ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f),
-                                "Item #%d", u.itemId);
+                            CopyableName(u.itemName.empty() ? "Item #" + std::to_string(u.itemId) : u.itemName,
+                                         ImVec4(0.9f, 0.6f, 0.2f, 1.0f));
                             ImGui::Text("  Senin: %s | En dusuk: %s",
                                 ProfitEngine::FormatCopper(u.myPrice).c_str(),
                                 ProfitEngine::FormatCopper(u.lowestPrice).c_str());
@@ -443,6 +631,29 @@ void AddonOptions() {
             g_config->Save(g_configPath);
         }
     }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Emir ekonomisi");
+    int posCapGold = g_config ? g_config->GetPositionCapital() / 10000 : 20;
+    if (ImGui::SliderInt("Emir basi sermaye (g)", &posCapGold, 1, 200)) {
+        if (g_config) {
+            g_config->SetPositionCapital(posCapGold * 10000);
+            g_config->Save(g_configPath);
+            if (g_worker) g_worker->ForcePoll();
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Tek pozisyona baglanacak max altin.\nEmir adedi = min(250, bu / alis fiyati)\nOneri: toplam sermayenin %%10-20'si");
+
+    int minPpoGold10 = g_config ? g_config->GetMinProfitPerOrder() / 1000 : 30; // 0.1g steps
+    if (ImGui::SliderInt("Min kar/emir (x0.1g)", &minPpoGold10, 1, 200, "%d")) {
+        if (g_config) {
+            g_config->SetMinProfitPerOrder(minPpoGold10 * 1000);
+            g_config->Save(g_configPath);
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("= %s", ProfitEngine::FormatCopper(minPpoGold10 * 1000).c_str());
 
     ImGui::Text("Watchlist: %d item", g_config ? (int)g_config->GetWatchlist().size() : 0);
 }

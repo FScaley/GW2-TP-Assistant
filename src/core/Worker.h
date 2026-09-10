@@ -25,6 +25,9 @@ struct WatchlistSnapshot {
         PriceData price;
         FlipResult flip;
         bool hasData = false;
+        bool hasMarket = false; // both buy orders and sell listings exist
+        int orderQty = 0;        // min(250, positionCapital / buyPrice)
+        int profitPerOrder = 0;  // flip.profit * orderQty
     };
     std::vector<Entry> entries;
     std::chrono::steady_clock::time_point timestamp;

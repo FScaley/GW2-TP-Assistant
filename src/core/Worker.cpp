@@ -1,4 +1,5 @@
 #include "Worker.h"
+#include <algorithm>
 
 void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& dataDir) {
     m_api = api;
@@ -142,9 +143,19 @@ void Worker::PollOnce() {
                 entry.price = p;
                 entry.flip = ProfitEngine::CalcFlip(p.buyPrice, p.sellPrice);
                 entry.hasData = true;
+                entry.hasMarket = p.buyQty > 0 && p.sellQty > 0;
+
+                if (p.buyPrice > 0) {
+                    int cap = m_config->GetPositionCapital();
+                    entry.orderQty = std::clamp(cap / p.buyPrice, 1, 250);
+                    entry.profitPerOrder = entry.flip.profit * entry.orderQty;
+                }
 
                 bool wasAlerted = m_alertedItems.count(wi.id) > 0;
-                if (entry.flip.roi > ALERT_THRESHOLD) {
+                if (!entry.hasMarket) {
+                    // no valid market — never alert, clear stale alert state
+                    m_alertedItems.erase(wi.id);
+                } else if (entry.flip.roi > ALERT_THRESHOLD) {
                     if (m_firstPoll) {
                         m_alertedItems.insert(wi.id);
                     } else if (!wasAlerted) {
@@ -220,6 +231,15 @@ void Worker::DoUndercut() {
     UndercutDetector detector;
     auto undercuts = detector.Check(*m_api);
 
+    if (!undercuts.empty()) {
+        std::vector<int> ids;
+        for (auto& u : undercuts) ids.push_back(u.itemId);
+        auto infos = m_api->GetItems(ids);
+        for (auto& u : undercuts)
+            for (auto& info : infos)
+                if (info.id == u.itemId) { u.itemName = info.name; break; }
+    }
+
     // Use FIFO avg cost from P&L instead of current buy order
     for (auto& u : undercuts) {
         int avgCost = m_pnlTracker.GetAvgCost(u.itemId);
@@ -236,8 +256,8 @@ void Worker::DoUndercut() {
     std::vector<AlertMsg> alerts;
     for (auto& u : undercuts) {
         alerts.push_back({
-            "Undercut: Item #" + std::to_string(u.itemId) + " — "
-            + ProfitEngine::FormatCopper(u.myPrice) + " > "
+            "Undercut: " + (u.itemName.empty() ? "Item #" + std::to_string(u.itemId) : u.itemName)
+            + " — " + ProfitEngine::FormatCopper(u.myPrice) + " > "
             + ProfitEngine::FormatCopper(u.lowestPrice)
         });
     }

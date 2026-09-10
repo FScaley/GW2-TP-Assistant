@@ -17,6 +17,10 @@ bool ConfigManager::Load(const std::string& path) {
             m_apiKey = j["api_key"].get<std::string>();
         if (j.contains("poll_interval_sec"))
             m_pollInterval.store(j["poll_interval_sec"].get<int>());
+        if (j.contains("position_capital"))
+            m_positionCapital.store(j["position_capital"].get<int>());
+        if (j.contains("min_profit_per_order"))
+            m_minProfitPerOrder.store(j["min_profit_per_order"].get<int>());
 
         m_watchlist.clear();
         if (j.contains("watchlist")) {
@@ -39,6 +43,8 @@ bool ConfigManager::Save(const std::string& path) {
     json j;
     j["api_key"] = m_apiKey;
     j["poll_interval_sec"] = m_pollInterval.load();
+    j["position_capital"] = m_positionCapital.load();
+    j["min_profit_per_order"] = m_minProfitPerOrder.load();
 
     json wl = json::array();
     for (auto& item : m_watchlist) {
@@ -94,16 +100,30 @@ void ConfigManager::RemoveFromWatchlist(int id) {
         m_watchlist.end());
 }
 
+// Only items that clear ~3g profit per order at a 20g position cap.
+// Copper-tier mats (Coarse Sand, Putrescence, ...) were dropped: 250-stack profit is
+// 20-50s, so a 100g bankroll would need hundreds of orders and exceed daily market volume.
+// Bag of Radiant Energy / Brilliant Opal Jewel were dropped too: GW2BLTC shows 2 and 8 units
+// per day flowing INTO buy orders — the wide spread exists because the buy side never fills.
+// GW2BLTC scan (Sep 2026): kâr/emir ≥ 3g at 20g cap, Sold ≥ 200 AND Bought ≥ 200/day, non-seasonal.
 std::vector<WatchlistItem> ConfigManager::DefaultWatchlist() {
     return {
-        {71641, "Pile of Coarse Sand"},
-        {19710, "Green Wood Plank"},
-        {86269, "Powdered Rose Quartz"},
-        {83757, "Congealed Putrescence"},
-        {12250, "Walnut"},
-        {19727, "Seasoned Wood Log"},
-        {86287, "Corsair Tuning Crystal"},
-        {24542, "Brilliant Opal Jewel"},
-        {71730, "Bag of Radiant Energy"},
+        {89105,  "Mystic Aspect"},
+        {86997,  "Plate of Beef Rendang"},
+        {82488,  "Salvageable Intact Forged Scrap"},
+        {24312,  "Molten Fragment"},
+        {9476,   "Master Tuning Crystal"},
+        {43449,  "Potent Master Tuning Crystal"},
+        {8892,   "Powerful Potion of Dredge Slaying"},
+        {104282, "Shard of Mistburned Barrens"},
+        {36782,  "Raspberry Passion Fruit Compote"},
+        {49430,  "+7 Agony Infusion"},
+        {12383,  "Blackberry Cookie"},
+        {8886,   "Powerful Potion of Demon Slaying"},
+        {71473,  "Badge of Tribute"},
+        {12993,  "Iron Plated Dowel"},
+        {79410,  "Mystic Curio"},
+        {12176,  "Bottle of Simple Dressing"},
+        {12990,  "Bronze Plated Dowel"},
     };
 }

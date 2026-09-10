@@ -7,6 +7,17 @@
 #include <iomanip>
 #include <chrono>
 #include <thread>
+#include <functional>
+
+// Poll a condition instead of sleeping a fixed time — API latency varies, fixed sleeps flake.
+static bool WaitFor(std::function<bool()> cond, int timeoutMs = 15000) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (cond()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return cond();
+}
 
 int main() {
     std::cout << "=== Worker Thread Test (Faz 1 + Faz 2) ===\n\n";
@@ -22,8 +33,8 @@ int main() {
     std::cout << "[1] Starting worker thread...\n";
     worker.Start(&api, &config, ".");
 
-    std::cout << "[2] Waiting 5s for first poll...\n";
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::cout << "[2] Waiting for first poll...\n";
+    WaitFor([&] { return !worker.GetSnapshot().entries.empty(); });
 
     auto snap = worker.GetSnapshot();
     std::cout << "[3] Snapshot: " << snap.entries.size() << " items, apiOk=" << snap.apiOk << "\n";
@@ -41,9 +52,7 @@ int main() {
     std::cout << "\n[4] ForcePoll test...\n";
     auto ts1 = worker.GetSnapshot().timestamp;
     worker.ForcePoll();
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-    auto ts2 = worker.GetSnapshot().timestamp;
-    bool forcePollWorked = ts2 > ts1;
+    bool forcePollWorked = WaitFor([&] { return worker.GetSnapshot().timestamp > ts1; });
     std::cout << "  Timestamp advanced: " << (forcePollWorked ? "YES [OK]" : "NO [FAIL]") << "\n";
 
     // --- Faz 2: Alert dedup test ---
@@ -52,8 +61,9 @@ int main() {
     std::cout << "  First drain: " << alerts1.size() << " alerts (should be 0 — first poll suppressed)\n";
 
     // Force second poll to test alert state
+    auto tsA = worker.GetSnapshot().timestamp;
     worker.ForcePoll();
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    WaitFor([&] { return worker.GetSnapshot().timestamp > tsA; });
     auto alerts2 = worker.DrainAlerts();
     std::cout << "  Second drain: " << alerts2.size() << " alerts (should be 0 — already alerted)\n";
 
@@ -66,7 +76,11 @@ int main() {
     config.AddToWatchlist(testId, "Item #" + std::to_string(testId));
     std::cout << "  Added 'Item #" << testId << "' as placeholder\n";
     worker.ForcePoll();
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    WaitFor([&] {
+        for (auto& e : worker.GetSnapshot().entries)
+            if (e.itemId == testId && e.name.rfind("Item #", 0) != 0) return true;
+        return false;
+    });
 
     auto snap2 = worker.GetSnapshot();
     bool nameResolved = false;
@@ -84,11 +98,12 @@ int main() {
     std::cout << "\n[7] Remove item test...\n";
     config.RemoveFromWatchlist(testId);
     worker.ForcePoll();
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    bool removed = WaitFor([&] {
+        for (auto& e : worker.GetSnapshot().entries)
+            if (e.itemId == testId) return false;
+        return true;
+    });
     auto snap3 = worker.GetSnapshot();
-    bool removed = true;
-    for (auto& e : snap3.entries)
-        if (e.itemId == testId) removed = false;
     std::cout << "  Item " << testId << " removed: " << (removed ? "YES [OK]" : "NO [FAIL]") << "\n";
     std::cout << "  Watchlist size: " << snap3.entries.size() << "\n";
 
