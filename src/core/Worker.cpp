@@ -235,6 +235,8 @@ void Worker::PollOnce() {
             for (auto& ob : books) {
                 if (ob.itemId == sr.cost.outputItemId) {
                     sr.hasBook = true;
+                    sr.buyQtyWithin5 = 0;
+                    sr.sellQtyWithin5 = 0;
                     // Within-5% band: real demand/supply near market price
                     if (!ob.buys.empty()) {
                         int top = ob.buys[0].price;
@@ -257,7 +259,7 @@ void Worker::PollOnce() {
                         if (remain == 0) break;
                     }
                     sr.vwapSellRev = rev;
-                    sr.vwapProfit = rev - sr.cost.totalCost;
+                    sr.vwapProfit = rev - sr.cost.totalCost * sr.orderQty;
                     sr.vwapCovers = (remain == 0);
                     sr.hasVwap = true;
                     break;

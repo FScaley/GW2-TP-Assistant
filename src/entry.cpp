@@ -1250,10 +1250,11 @@ void AddonRender() {
                                                         case 2: va = res[a].cost.minRating; vb = res[b].cost.minRating; break;
                                                         case 3: va = res[a].cost.totalCost; vb = res[b].cost.totalCost; break;
                                                         case 4: va = res[a].cost.sellRevenue; vb = res[b].cost.sellRevenue; break;
-                                                        case 5: va = res[a].hasVwap ? res[a].vwapProfit : res[a].profitDump;
-                                                                vb = res[b].hasVwap ? res[b].vwapProfit : res[b].profitDump; break;
-                                                        case 6: va = (int)(res[a].hasVwap && res[a].cost.totalCost > 0 ? res[a].vwapProfit * 100.0 / res[a].cost.totalCost : res[a].roiDump);
-                                                                vb = (int)(res[b].hasVwap && res[b].cost.totalCost > 0 ? res[b].vwapProfit * 100.0 / res[b].cost.totalCost : res[b].roiDump); break;
+                                                        case 5: { auto ppc = [](const Worker::ScanResult& s) { return s.hasVwap && s.orderQty > 0 ? s.vwapProfit / s.orderQty : s.profitDump; };
+                                                                va = ppc(res[a]); vb = ppc(res[b]); break; }
+                                                        case 6: { auto roi = [](const Worker::ScanResult& s) { int p = s.hasVwap && s.orderQty > 0 ? s.vwapProfit / s.orderQty : s.profitDump;
+                                                                return s.cost.totalCost > 0 ? (int)(p * 100.0 / s.cost.totalCost) : 0; };
+                                                                va = roi(res[a]); vb = roi(res[b]); break; }
                                                         case 7: va = res[a].hasVwap ? res[a].vwapProfit : res[a].profitPerOrderDump;
                                                                 vb = res[b].hasVwap ? res[b].vwapProfit : res[b].profitPerOrderDump; break;
                                                         case 8: va = res[a].hasBook ? res[a].buyQtyWithin5 : res[a].outputBuyQty;
@@ -1328,22 +1329,24 @@ void AddonRender() {
                                         ImGui::EndTooltip();
                                     }
 
-                                    // Sell revenue — dump into buy orders (guaranteed)
+                                    // Sell revenue (per craft) — VWAP when available
                                     ImGui::TableNextColumn();
                                     if (sr.hasVwap) {
+                                        int vwapPerCraft = sr.orderQty > 0 ? sr.vwapSellRev / sr.orderQty : 0;
                                         ImVec4 vCol = sr.vwapCovers ? ImVec4(1,1,1,1) : ImVec4(0.9f, 0.6f, 0.2f, 1.0f);
-                                        ImGui::TextColored(vCol, "%s", ProfitEngine::FormatCopper(sr.vwapSellRev).c_str());
+                                        ImGui::TextColored(vCol, "%s", ProfitEngine::FormatCopper(vwapPerCraft).c_str());
                                         if (ImGui::IsItemHovered()) {
                                             ImGui::BeginTooltip();
                                             ImGui::Text("VWAP: %d birim kitaptan supuruldu%s",
                                                 sr.orderQty * sr.cost.outputCount,
                                                 sr.vwapCovers ? "" : " (YETERSIZ DERINLIK!)");
                                             ImGui::Separator();
+                                            ImGui::Text("VWAP birim gelir: %s",
+                                                ProfitEngine::FormatCopper(vwapPerCraft).c_str());
                                             ImGui::Text("En iyi alis emri: %s (1 adet)",
                                                 ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str());
-                                            ImGui::Text("VWAP gelir: %s (%d birim)",
-                                                ProfitEngine::FormatCopper(sr.vwapSellRev).c_str(),
-                                                sr.orderQty * sr.cost.outputCount);
+                                            ImGui::Text("Toplam VWAP gelir: %s (%d craft)",
+                                                ProfitEngine::FormatCopper(sr.vwapSellRev).c_str(), sr.orderQty);
                                             ImGui::Text("Listeleyerek sat: %s (ust sinir)",
                                                 ProfitEngine::FormatCopper(sr.cost.sellRevenue).c_str());
                                             ImGui::EndTooltip();
@@ -1356,32 +1359,34 @@ void AddonRender() {
                                                 ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str());
                                     }
 
-                                    // Profit — VWAP when available, else dump-based
+                                    // Profit (per craft) — VWAP when available
                                     ImGui::TableNextColumn();
                                     {
-                                        int showProfit = sr.hasVwap ? sr.vwapProfit : sr.profitDump;
+                                        int vwapProfitPerCraft = sr.orderQty > 0 ? sr.vwapProfit / sr.orderQty : 0;
+                                        int showProfit = sr.hasVwap ? vwapProfitPerCraft : sr.profitDump;
                                         ImGui::TextColored(showProfit > 0 ? green : red,
                                             "%s", ProfitEngine::FormatCopper(showProfit).c_str());
                                         if (ImGui::IsItemHovered()) {
                                             ImGui::BeginTooltip();
                                             if (sr.hasVwap)
-                                                ImGui::Text("VWAP kar: %s (kitap derinliginden)",
-                                                    ProfitEngine::FormatCopper(sr.vwapProfit).c_str());
-                                            ImGui::Text("Dump kar (1 adet fiyat): %s",
+                                                ImGui::Text("VWAP birim kar: %s",
+                                                    ProfitEngine::FormatCopper(vwapProfitPerCraft).c_str());
+                                            ImGui::Text("Dump birim kar: %s",
                                                 ProfitEngine::FormatCopper(sr.profitDump).c_str());
                                             ImGui::Text("Garanti taban: %s",
                                                 ProfitEngine::FormatCopper(sr.profitFloor).c_str());
-                                            ImGui::Text("Listeleyerek: %s (ust sinir)",
-                                                ProfitEngine::FormatCopper(sr.cost.profit).c_str());
+                                            ImGui::Text("Toplam VWAP kar (%d craft): %s",
+                                                sr.orderQty, ProfitEngine::FormatCopper(sr.vwapProfit).c_str());
                                             ImGui::EndTooltip();
                                         }
                                     }
 
-                                    // ROI — VWAP when available
+                                    // ROI — per-craft VWAP when available
                                     ImGui::TableNextColumn();
                                     {
+                                        int vwapPPC = sr.orderQty > 0 ? sr.vwapProfit / sr.orderQty : 0;
                                         double showRoi = sr.hasVwap && sr.cost.totalCost > 0
-                                            ? sr.vwapProfit * 100.0 / sr.cost.totalCost : sr.roiDump;
+                                            ? vwapPPC * 100.0 / sr.cost.totalCost : sr.roiDump;
                                         ImGui::TextColored(showRoi > 20 ? green : showRoi > 0 ? yellow : red,
                                             "%.0f%%", showRoi);
                                     }
@@ -1469,7 +1474,7 @@ void AddonRender() {
                                     // Durum — priority: ZARAR > SATILMIYOR > YETERSIZ > INCE > ALIM RISKLI > SATIS RISKLI > OK
                                     ImGui::TableNextColumn();
                                     {
-                                        int effectiveProfit = sr.hasVwap ? sr.vwapProfit : sr.profitDump;
+                                        int effectiveProfit = sr.hasVwap && sr.orderQty > 0 ? sr.vwapProfit / sr.orderQty : sr.profitDump;
                                     if (effectiveProfit <= 0) {
                                         ImGui::TextColored(red, "ZARAR");
                                     } else if (sr.vol.ok && sr.vol.soldPerDay <= 0) {
