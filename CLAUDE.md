@@ -43,7 +43,7 @@ cl /EHsc /std:c++17 /I"../include" test_harness.cpp core/HttpClient.cpp core/GW2
 
 The general pattern: `cl /EHsc /std:c++17 /I"../include" test_XXX.cpp <module .cpps> <core .cpps used> /link [winhttp.lib if HTTP needed]`. Trace includes in the test file to find required `.cpp` files.
 
-Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_volume`, `test_crafting`, `test_orders`, `test_recipe_db` (all pure/offline), `test_worker` (requires network — live GW2 API calls, writes data files into CWD that are gitignored).
+Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_volume`, `test_crafting`, `test_orders`, `test_recipe_db`, `test_salvage` (all pure/offline), `test_worker` (requires network — live GW2 API calls, writes data files into CWD that are gitignored), `test_inventory` (requires network + a `config.json` with an `inventories`/`characters`-scoped key in CWD; dumps the active character's bag slots to verify the inventory endpoint and `binding` parsing).
 
 ## Architecture
 
@@ -64,10 +64,10 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
 - **`src/entry.cpp`** — Nexus DLL entry, AddonLoad/Unload/Render/Options, all ImGui rendering. Single-file UI (no separate UI classes).
 - **`src/core/`** — Infrastructure:
   - `HttpClient` — WinHTTP wrapper (10s timeout, Schannel TLS)
-  - `GW2ApiClient` — All GW2 API endpoint wrappers (prices, listings, transactions, recipes, items). Handles 206 Partial Content, batch ≤200 IDs per request.
+  - `GW2ApiClient` — All GW2 API endpoint wrappers (prices, listings, transactions, recipes, items, character inventory). Handles 206 Partial Content, batch ≤200 IDs per request. `ItemInfo` carries rarity/type/subtype/level/vendorValue plus the flags `AccountBound`, `SoulbindOnAcquire` (note the API spelling), `NoSalvage`, `NoSell`. `GetCharacterInventory(name)` percent-encodes the name (Turkish characters in UTF-8) and returns slots with `binding` and `hasUpgrade` (non-empty `upgrades` array).
   - `ProfitEngine` — Tax math (5% listing + 10% exchange = 15% total), flip/relist calculations. Header-mostly with `FormatCopper()` in .cpp.
   - `ConfigManager` — JSON config (API key, watchlist, poll interval, position capital). Dir: Nexus addon data path.
-  - `Worker` — Background thread: poll cycle, manages all module operations, owns all snapshots behind `m_snapshotMutex`. Entry point is `Run()` → `PollOnce()` loop + on-demand `DoPnL`/`DoOrders`/`DoCrafting`/`DoScan`. `StampBook()` helper stamps VWAP + within-5% band onto `ScanResult` from order book data — called from both `PollOnce` and `DoScan`.
+  - `Worker` — Background thread: poll cycle, manages all module operations, owns all snapshots behind `m_snapshotMutex`. Entry point is `Run()` → `PollOnce()` loop + on-demand `DoPnL`/`DoOrders`/`DoCrafting`/`DoScan`/`DoInventory`. `StampBook()` helper stamps VWAP + within-5% band onto `ScanResult` from order book data — called from both `PollOnce` and `DoScan`. `DoInventory` takes the character name from `RequestInventory(name)` (render thread decodes MumbleLink `Identity` JSON via `WideCharToMultiByte(CP_UTF8)`), falls back to `/v2/characters[0]`, fetches item info + prices for the bag plus `SalvageCalc::ExtraPriceIds()`, and writes `InventorySnapshot` with an `error` string on any failure path (never a silent empty tab).
   - `BookAnalyzer` — Pure header-only: order book depth analysis (thin book detection, VWAP instant flip, queue stats).
 - **`src/modules/`** — Domain logic (all pure/testable, no HTTP):
   - `PnLTracker` — FIFO cost matching from transaction history, per-item P&L with ignore toggle
@@ -79,7 +79,7 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
 
 ### Key Patterns
 
-- **Snapshot pattern:** Worker writes full snapshot structs (`WatchlistSnapshot`, `PnLSummary`, `OrdersSnapshot`, `CraftingSnapshot`, `ScanSnapshot`) under mutex. Render copies them. Never pass pointers across threads.
+- **Snapshot pattern:** Worker writes full snapshot structs (`WatchlistSnapshot`, `PnLSummary`, `OrdersSnapshot`, `CraftingSnapshot`, `ScanSnapshot`, `InventorySnapshot`) under mutex. Render copies them. Never pass pointers across threads.
 - **Scan volume tracking:** `m_scanVolumeIds` (worker-only) holds output item IDs from the last scan. `PollOnce` merges these with watchlist IDs for `GetListings` calls, enabling VolumeTracker + VWAP for scan outputs without adding them to the watchlist.
 - **Carry-forward on API failure:** If an API call fails, the previous snapshot data is kept with a `stale` flag — never clear data on errors.
 - **First-poll silence:** Alerts seed existing state on first poll without firing notifications, so addon startup doesn't spam.
@@ -91,7 +91,9 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
 
 - Rate limit: 300 burst, 5/sec refill, max 200 IDs per batch request.
 - Transactions history: 90-day retention, server-cached for minutes.
-- Auth endpoints need API key with `account` + `tradingpost` scopes. Prices/listings/recipes need no auth.
+- Auth endpoints need API key with `account` + `tradingpost` scopes; the Canta tab additionally needs `inventories` + `characters` (`/v2/characters`, `/v2/characters/:name/inventory`). Prices/listings/recipes/items need no auth.
+- `/v2/items` `vendor_value` can be non-zero on `NoSell` items; `level` is 0 for containers (Unidentified Gear), so container handling must key on item ID, not level.
+- `/v2/tokeninfo` lists a key's permissions — `test_inventory` checks it first and prints exactly which scope is missing.
 - Mystic Forge recipes are NOT in `/v2/recipes`.
 
 ### Data Files (addon directory, gitignored)
@@ -139,3 +141,29 @@ After truncation: `ResolveNames` for the 50, set `m_scanVolumeIds`, stamp volume
 ### Emir Ekonomisi (Order Economics)
 
 The addon's core metric is **profit per order** (`profitPerOrder = unitProfit × min(250, positionCapital / buyPrice)`), not raw ROI or unit profit. This filters out low-value high-volume items that look profitable but aren't worth the effort per order slot. Position capital and minimum threshold are user-configurable in Nexus settings.
+
+### Salvage Decision Model (SalvageCalc)
+
+Per bag item, three options are valued in copper per unit and the argmax wins:
+- `vendorValue` — 0 when `NoSell`.
+- `tpDumpNet = NetRevenue(buy)` — dump into buy orders (guaranteed; project convention). 0 when bound (slot `binding`, `AccountBound`, or `SoulbindOnAcquire`). `tpListNet = NetRevenue(sell−1)` is tooltip-only, never a verdict.
+- `salvageEv = ectoYield×ectoNet + Σ rate×matNet − kitCost×kitUses`, from a `SalvageProfile` chosen by `SelectProfile(info)`.
+
+**Hard rules, in order:** `Ascended`/`Legendary` → `KEEP` ("TUT") before anything else. `NoSalvage` → no profile. `Junk` → VENDOR. `salvageUnknown` (shown as `?`, excluded from `bestValue()` and totals) whenever the salvage value cannot be computed honestly: ecto price missing for an ecto profile, every material price missing for a mat-only profile, equipment below level 68, or an equipment type with no research data (green trinkets). A confident VENDOR/TP SAT must never come from a missing number.
+
+**Profiles** (all rates hand-computed from raw wiki `{{SDRL}}` rows, 11 Sep 2026 — see `SalvageCalc.cpp` comments for the exact totals):
+| Item | Profile | Ecto | Mats | Kit |
+|---|---|---|---|---|
+| Piece of Rare Unidentified Gear (83008) | identify → Silver-Fed | 0.8808/container (45,984 / 52,207) | tier mats + 1.39 mote + charms | 60c × 0.988 |
+| Piece of Unidentified Gear (84731) | direct Copper-Fed | 0 | tier mats + 0.22 mote | 3c |
+| Piece of Common Unidentified Gear (85016) | direct Copper-Fed | 0 | tier mats + 0.02 mote | 3c |
+| Rare Weapon/Armor ≥68 | Silver-Fed | 0.88 (floor; measured 0.89–0.90) | per-rare table incl. 1.41 mote + charms | 60c |
+| Rare Trinket/Back ≥68 | Silver-Fed, `approx` | 0.88 | none (armor table not applicable) | 60c |
+| Exotic ≥68 | Silver-Fed, `approx` | 1.25 (1,000 sample) | none (no data; Dark Matter is account bound) | 60c |
+| Fine/Masterwork Weapon/Armor ≥68 | Copper-Fed, `approx` | 0 | identified-green-unid table (33,000 items) + 0.24 mote | 3c |
+
+**Upgrade gating:** Lucent Mote and the six Symbols/Charms come from the destroyed rune/sigil, so they are skipped when the slot has no `upgrades` (containers are exempt — identified gear always carries an upgrade). Skipped mats are not counted as "missing".
+
+**Data rule (learned the hard way):** v0.9.2–v0.9.4 shipped 1.3932 ecto for Rare Unid Gear because a rendered-page summarizer misattributed the Lucent Mote row, plus two wrong leather IDs. Wiki research numbers must be taken from `index.php?title=…&action=raw` `{{SDRL}}` rows and divided by `Total` yourself; item IDs must be verified against `/v2/items`. Cite the page, the section, and the sample size in the code comment.
+
+**Practical outcomes at Sep 2026 prices:** Rare Unid Gear → AC+SALVAGE by ~2–3s/unit (not the ~11s the wrong yield implied); level-80 greens → SALVAGE ≈ vendor ± a few copper, SALVAGE preferred (Essence of Luck is unvalued upside); exotics → almost always TP SAT unless the buy order is under ~23s.

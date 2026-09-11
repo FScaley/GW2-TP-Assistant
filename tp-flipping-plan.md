@@ -145,6 +145,9 @@ Birim başına daha fazla kâr, undercut'a karşı daha dayanıklı. Altın/gün
 ### Alternatif Stratejiler
 1. **Time-Gated Crafting** (~1-3g/gün): Deldrimor Steel, Bolt of Damask, Elonian Leather, Spiritwood
 2. **Rare Salvage → Ecto**: Level 68+ rare al → salvage → ~0.9 ecto/rare
+   > **DÜZELTME (Faz 9, 11 Eyl 2026):** Doğrulanmış oran **0.88 ecto/rare** (wiki 52.207 kutu; kontrollü test 0.90).
+   > "Rare al → salvage" arbitrajı ölü: TP'deki level 68+ rare'ların satış fiyatı break-even'ın (~15.5s) üstünde,
+   > 1.180 item'dan yalnızca 5'i anında alımda kârlı (5c–2s41c marj). Ucuz görünen alış emirleri zombi (dolmuyor).
 3. **Mystic Forge T5→T6**: 50 T5 + 1 T6 + 5 Dust + 5 Philosopher's Stone = ort. [doğrulanacak] T6
 
 ### Risk Kuralları
@@ -295,10 +298,12 @@ GW2-TP-Assistant.dll (Nexus Addon)
   - Düşük hacimli itemlerde (Bag of Radiant Energy, 335/gün) relist gerekebilir
   - **Uyarı**: Formül satış olasılığını içermez — kuyruktaki birim sayısı karar girdisi
 
-#### 5. Salvage Kâr Hesaplayıcı (Ek)
+#### 5. Salvage Kâr Hesaplayıcı (Ek) → Faz 9'da "Çanta" modülü olarak gerçekleşti
 - Level 68+ Rare ekipman fiyatı vs (0.9 × ecto fiyatı × 0.85)
 - Kit maliyeti dahil
 - Kârlıysa yeşil, değilse kırmızı
+- **Gerçekleşen kapsam çok daha geniş:** çantadaki her item için vendor / TP dump / salvage argmax, unid gear kutuları,
+  yeşil ekipman tier-mat tabloları, upgrade'e bağlı mote/charm, kit maliyeti, "?" bilinmiyor durumu. Bkz. Faz 9.
 
 ### Mimari Kural: Render Thread Güvenliği
 ```
@@ -508,7 +513,7 @@ eksik fiyat → complete=false, derinlik sınırı, outputCount > 1 normalizasyo
 - [ ] test_worker genişletme; sürüm 0.6
 
 ### Faz 5: Ek Özellikler
-- [ ] Salvage kâr hesaplayıcı
+- [x] Salvage kâr hesaplayıcı → **Faz 9: Çanta / Salvage Danışmanı** (v0.9.0–v0.9.5, 11 Eyl 2026)
 - [ ] Hacim tahmini → **Faz 5b** (aşağıda); fiyat geçmişi grafiği sonraya
 - [ ] Türkçe UI (ana dil)
 
@@ -1148,3 +1153,142 @@ struct ScanResult {
 4. **%5 bant tek outlier'da yanıltıcı:** 1@60s + 4999@40s → "1/5K" gösterir ama 40s da kârlı olabilir.
    VWAP geliri doğru hesaplar, bant kalite göstergesidir gelir değil.
 5. **Devir en az 2 saat veri gerektirir.** Addon kapalıyken veri toplanmaz.
+
+### Faz 9: Çanta — Envanter Salvage Danışmanı ✅ kod tamam (v0.9.0 → v0.9.5, 11 Eyl 2026), oyun içi doğrulama bekliyor
+
+**Soru:** Çantadaki item'ları "salvage et / TP'ye sat / vendor'a sat" diye ayıran bir modül gerekli mi, yoksa
+salvage'dan daha çok kazandıran başka bir yol var mı?
+
+#### 9a: Araştırma — salvage arbitrajı ölü, karar destek değerli
+
+**İlk advisor çerçevesi:** "Çanta sıralayıcı düşük değer (kararların %90'ı trivial), asıl para *TP'den rare al →
+salvage → ecto sat* arbitrajında; Faz 7 pipeline'ı tersine çevrilir." Bu tez veriyle **çürütüldü**:
+
+1. **Sanity check (`test_salvage_check`, silindi):** ecto alış 20s32c → net 17s28c → 0.9 ecto ≈ **15s55c break-even**.
+   Rare Unid Gear 17s99c → salvage −2s44c *gibi* görünüyordu (bu hesap eksikti: ecto-only, mat/mote yok — 9c'de düzeltildi).
+2. **Scanner v1 (alış emri ≤ 12s, 27.987 item → 108 "kârlı" level 68+ rare):** hepsi **zombi alış emri** —
+   alış 5s, satış 30s (5–7× spread), emir dolmuyor. Golden Racing Scarf `AccountBound` olduğu halde listede (TP'de alınamaz).
+   Kullanıcının oyun içi gözlemi ("rare'lar 15s'den başlıyor") doğruydu.
+3. **Scanner v2 (satış fiyatı ≤ break-even):** 1.180 tradeable level 68+ rare'dan **5'i** anında alımda kârlı,
+   marj 5c–2s41c. Emir bazlı 50 aday var ama dolum belirsiz. **Sonuç: arbitraj yaşamıyor.**
+4. **Pivot (kullanıcı):** "Bana en başta istediğim lazım — çantamdakileri ayırt et." Advisor da düzeltti: unid gear
+   kararı **non-obvious ve yüksek hacimli**, çoğu oyuncu yanlış yapıyor → modül değerli.
+
+**Kısıtlar:** envanter yalnızca `/v2/characters/:name/inventory` ile (yeni scope'lar `inventories` + `characters`;
+oyun belleği okumak Nexus/ArenaNet policy dışı). API'de salvage yield verisi **yok** → wiki araştırma sayfalarından
+hardcoded tablo şart.
+
+#### 9b: Mimari (v0.9.0)
+
+`PnLTracker`/`CraftingCalc` ile aynı desen:
+- `GW2ApiClient`: `ItemInfo` genişletildi (rarity, type, subtype, level, vendorValue, flag'ler);
+  `GetCharacterNames()`, `GetCharacterInventory(name)` (`InventorySlot{itemId,count,binding,hasUpgrade}`).
+- `SalvageCalc` (saf, HTTP'siz): `Evaluate` / `EvaluateInventory` → `SalvageResult`.
+- `Worker::DoInventory` + `InventorySnapshot{items, characterName, error, totalVendor, totalBest}` + `RequestInventory(name)`.
+  Karakter adı render thread'de MumbleLink `Identity` JSON'ından (`WideCharToMultiByte(CP_UTF8)` — `wc & 0x7F` Türkçe
+  harfleri bozuyordu, v0.9.2'de düzeltildi); yoksa `/v2/characters[0]`. URL'de `PercentEncode` (yalnız boşluk değil).
+- UI "Canta" sekmesi: Item · Adet · Rarity · Vendor · TP(net) · Salvage · Karar; Hepsi/Salvage/TP Sat/Vendor filtresi;
+  `PushID(slotIndex)` (aynı isimli satırlar); hata mesajı kırmızı (403 scope, 404 karakter adı — sessiz boş sekme yok).
+
+#### 9c: Veri doğrulama — özetleyici tabloyu karıştırdı, ham satırlar okundu (v0.9.5)
+
+**Olay:** v0.9.2–v0.9.4 Rare Unid Gear için **1.3932 ecto** ile çıktı. Kaynak, wiki sayfasının WebFetch özetiydi; iki
+ayrı özet birbiriyle çelişti (1.3932 vs 0.8761). Sayfa `index.php?title=…&action=raw` ile indirilip `{{SDRL}}` veri
+satırları toplandı: **1.3932 = Lucent Mote** (72.735 / 52.207), **ecto = 45.984 / 52.207 = 0.8808.** Aynı özet
+"Hardened Leather 0.8808" ve "Ancient Wood 0.3236" demişti — satırlar kaymıştı.
+
+**Kural (CLAUDE.md'ye işlendi):** wiki araştırma sayısı = ham `{{SDRL}}` satır toplamı ÷ `Total`, elle; item ID'leri
+`/v2/items` ile doğrulanır; kod yorumunda sayfa + bölüm + örnek sayısı + tarih.
+
+**Doğrulanan veriler (11 Eyl 2026):**
+
+| Kaynak / bölüm | Örnek | Ecto | Mote | Not |
+|---|---|---|---|---|
+| Rare Unid, identify → Silver-Fed (6 katkı) | 52.207 kutu, 51.574 rare salvaged, 633 exotic tutuldu | **0.8808**/kutu (0.8916/rare) | 1.3932 | Mithril .4605 · Elder .3846 · Silk .3236 · Thick .2600 · Ori .0399 · Ancient .0296 · Goss .0166 · Hard .0155 · Symbol/Charm toplam ≈ .026 |
+| Rare Unid, direkt Copper-Fed | 5.000 | 0.6704 | 0.22 | identify etmeden kötü |
+| Rare Unid, direkt Runecrafter's | 5.000 | 0.8132 | 0.23 | 30c kit |
+| Green Unid (84731), direkt Copper-Fed | 12.690 | 0 | 0.2203 | Mithril .4524 · Elder .3139 · Silk .3091 · Thick .3171 · T6 ≈ .04/.02/.017/.019 |
+| Green Unid, identify → Copper-Fed | 33.000 | 0.0296 (içindeki %3.4 rare'dan) | 0.2381 | **yeşil ekipman proxy tablosu** (ecto hariç) |
+| Blue Unid (85016), direkt Copper-Fed | 35.000 | 0 | 0.0224 | Mithril .4499 · Elder .3080 · Silk .3063 · Thick .3237 |
+| Glob_of_Ectoplasm kontrollü test (Malgalad) | 500 | 0.90/rare | — | dağılım 0:36.9% 1:45.6% 2:8.5% 3:9.0% |
+| Talk:Glob_of_Ectoplasm (BelleroPhone, Tem 2024) | 2×500 exotic | **1.25** | — | Dark Matter 0.53–0.56/exotic — **account bound, TP değeri yok** |
+
+**ID düzeltmeleri (API):** Thick Leather Section **19729** (kodda 19732 = Hardened idi), Hardened Leather Section **19732**
+(kodda 19735 = Cured Thick Square idi), Blue Unid Gear **85016** (83003 = Forged Tormentor Elegy Mosaic idi).
+Mote 89140, Symbol of Control 89098 / Enhancement 89141 / Pain 89182, Charm of Brilliance 89103 / Potence 89258 / Skill 89216 —
+hepsi tradeable. Kit maliyeti araştırma sayfasının kendi `#vardefine`'larından: Copper-Fed 3, Runecrafter 30, Silver-Fed 60
+(Master's kit 1536c/25 = 61.4c).
+
+#### 9d: Karar modeli
+
+```
+vendor  = NoSell ? 0 : vendor_value
+tpDump  = bound ? 0 : NetRevenue(buy)          garanti; karar bunun üstünden
+tpList  = bound ? 0 : NetRevenue(sell − 1)     tooltip, garanti değil, asla karar değil
+salvage = ecto×ectoNet + Σ rate×matNet − kit×kitUses   (profil tablosundan)
+karar   = argmax(vendor, tpDump, salvage)      bilinmeyen salvage argmax'a girmez
+```
+- **TUT:** Ascended/Legendary — her şeyden önce, bound olsa bile "VENDOR" çıkamaz (v0.9.4'te çıkabiliyordu).
+- **?** (`salvageUnknown`): ecto fiyatı yok · mat-only profilde tüm mat fiyatları yok · ekipman level < 68 · veri olmayan tür
+  (yeşil trinket). Eksik sayıdan kesin karar üretilmez; toplamlara girmez.
+- **AC+SALVAGE:** yalnız Rare Unid Gear (önce identify). Yeşil/mavi kutu **kırılmaz**, direkt Copper-Fed (identify rotası
+  ≈ eşdeğer: +0.03 ecto, farklı mat karışımı, ~2c fazla kit).
+- **Upgrade kapısı:** mote/symbol/charm rune-sigil'den gelir → slot `upgrades` boşsa bu 7 mat atlanır (kutular muaf).
+- **Trinket/Back:** yalnız ecto (`approx`) — armor/weapon mat tablosu uygulanmaz; yanılgı garanti satışa doğru.
+- **Exotic:** yalnız ecto 1.25 (`approx`); mat/mote verisi yok, Dark Matter satılamaz.
+- Bound: slot `binding` **veya** `AccountBound` **veya** `SoulbindOnAcquire` (API yazımı — `SoulboundOnAcquire` hiç eşleşmiyordu).
+- `NoSalvage` → profil yok; `Junk` → VENDOR; Trophy özel kuralı kaldırıldı (argmax yeterli — ecto'nun kendisi Trophy).
+
+**Eylül 2026 fiyatlarında pratik sonuç:** Rare Unid Gear → AC+SALVAGE, marj **~2–3s** (yanlış yield'la ~11s görünüyordu);
+level 80 yeşil ekipman → SALVAGE ≈ vendor ± birkaç bakır, eşitlikte salvage (luck bonusu tool'da sayılmıyor);
+exotic → alış emri ~23s altında değilse TP SAT.
+
+#### 9e: Advisor bulguları ve düzeltmeler
+
+| Versiyon | Bulgu | Düzeltme |
+|---|---|---|
+| v0.9.0 | Sahte kaynak yorumu ("wiki 10K sample" — hiç okunmamış), 0.875 uydurma | Dürüst yorum; v0.9.5'te ham veriyle değiştirildi |
+| v0.9.0 | `charNames[0]` → 6 alt'lı oyuncu rastgele çanta görür | MumbleLink identity → `RequestInventory(name)` |
+| v0.9.0 | Batch fail'de item sessizce kayboluyor | `anyFailed` → `stale` |
+| v0.9.0 | `Sortable` flag handler'sız; Trophy TP'yi yoksayıyor; sürüm 0.8.8 kaldı | Flag kaldırıldı; Trophy TP karşılaştırması; 0.9.0 |
+| v0.9.1 | Sürüm artmadan release — Nexus çekmedi | Bump; release'i silip aynı tag'le yeniden oluşturmak işe yaramaz |
+| v0.9.2 | `wc & 0x7F` Türkçe karakter adını bozuyor → 404 sessiz | `WideCharToMultiByte(CP_UTF8)` + `PercentEncode` |
+| v0.9.2 | `GREEN_UNID_ECTO_YIELD = 0.18` uydurma | Kaldırıldı; v0.9.5'te mat tablosu |
+| v0.9.2 | İlk tarama hatası görünmez | `InventorySnapshot.error` kırmızı |
+| v0.9.2 | Aynı isimli satırlarda ImGui ID çakışması | `PushID(slotIndex)` |
+| v0.9.2 | `isBound` `ItemInfo` flag'lerini yoksayıyor; Gizmo ecto veriyor sanılıyor | Flag kontrolü; Gizmo çıkarıldı |
+| v0.9.2 | Render thread'de `json::parse` (identity) | Kaldı — tek seferlik, tıklamada; kural gereği worker'a taşınabilir |
+| v0.9.4 | Tier-6 mat'ler eksik → yeşiller "VENDOR" | Ori/Ancient/Goss/Hard eklendi (ama ID'ler yanlıştı) |
+| v0.9.5 | 1.3932 = Lucent Mote; 2 leather ID yanlış; blue unid ID yanlış | Ham `{{SDRL}}` hesabı; API ile ID doğrulama |
+| v0.9.5 | Ascended → VENDOR; ecto yokken kesin TP SAT; level<68 "VENDOR" | TUT; `salvageUnknown` "?" |
+| v0.9.5 | Symbol/Charm (~0.026/rare, 1–3g) marjla aynı mertebede, yok sayılıyordu | 7 upgrade-türevi mat canlı fiyatla |
+| v0.9.5 | Mote/charm rune-sigil'den gelir; boş slotlu ekipmanda yok | `hasUpgrade` kapısı |
+| v0.9.5 | Trinket'e armor mat tablosu uygulanıyor | Ecto-only `approx` profil |
+| v0.9.5 | Kit maliyeti yok; kit adı kararda yok | 3c / 60c düşülür; tooltip'te kit + dağılım |
+| v0.9.5 | Toplamlarda Ascended vendor değeri "optimal" sayılıyor | KEEP toplamlara girmez |
+
+**Süreç dersi (kullanıcı 3 kez uyardı):** Nexus auto-update `AddonDef.Version` karşılaştırır. Her DLL release'inde
+`entry.cpp`'de üç yer artar (`Version.*`, log string, Options text); yayınlanmış release silinmez, üzerine çıkılır.
+→ CLAUDE.md "Release Checklist".
+
+#### 9f: Testler ve durum
+
+- `test_salvage` **16/16** (formül profilden yeniden hesaplanır, sihirli sayı pinlenmez): sabitler/ID'ler · Rare Unid
+  (0.8808, kit 59) · green/blue unid · TP kazanır / salvage kazanır · charm var/yok marjinal kararı çevirir · trinket
+  ecto-only · upgrade kapısı (kutu muaf) · tüm mat fiyatı eksik → ? · exotic ecto-only · yeşil ekipman · bound varyantları
+  (slot, `AccountBound`, `SoulbindOnAcquire`) · NoSalvage/NoSell · Ascended/Legendary TUT · level 40 ? · ecto yok ? ·
+  Junk · batch.
+- `test_inventory`: `/v2/tokeninfo` scope kontrolü + karakter listesi + çanta dump (config.json CWD'de).
+- Release DLL: 0 uyarı. Sürüm 0.9.5 (3 yer). GitHub release v0.9.5, DLL asset.
+
+**Bilinen sınırlamalar:** level < 68 ekipman modellenmedi ("?"); exotic mat/mote yok (ecto-only); yeşil trinket verisi
+yok; Black Lion / Ascended kit yok; rune/sigil geri kazanımı (BL kit) yok; Essence of Luck değerlenmiyor (account bound,
+gerçek artı); Reclaimed Metal Plate (0.0015/yeşil) atlandı; yalnız aktif karakterin çantası (banka, shared slot, malzeme
+deposu yok); tpList yalnız bilgi.
+
+- [x] ItemInfo + envanter endpoint'leri; SalvageCalc profilleri; Worker DoInventory; Canta sekmesi; test_salvage
+- [x] Ham wiki verisiyle yield/ID doğrulaması; CLAUDE.md model + release checklist
+- [ ] **Oyun içi doğrulama:** soulbound bir item'ın TP sütununda "bound" yazması (`binding` alanı bu oturumda gerçek
+      envanterle hiç görülmedi — yazmıyorsa bound dalı ölü, her soulbound rare hayalet "TP SAT" alır); Rare Unid Gear →
+      AC+SALVAGE; Türkçe karakter adıyla tarama; scope eksik key ile kırmızı hata mesajı
+- [ ] Sonraki: level 68 altı tier-mat tabloları (wiki drop research), exotic mat/mote verisi, banka/malzeme deposu
