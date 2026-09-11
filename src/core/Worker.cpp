@@ -1094,6 +1094,9 @@ void Worker::DoInventory(const std::wstring& rawIdentity) {
             m_inventorySnapshot.scanning = false;
             m_inventorySnapshot.error = "Karakter listesi alinamadi — API key'de 'characters' scope var mi?";
             if (m_inventorySnapshot.hasData) m_inventorySnapshot.stale = true;
+            // Stamp even on failure: the Canta tab's 60 s auto-refresh keys off lastRefresh,
+            // otherwise a persistent error would re-request every throttle tick (5 s).
+            m_inventorySnapshot.lastRefresh = std::chrono::steady_clock::now();
             return;
         }
         charName = charNames[0];
@@ -1106,6 +1109,7 @@ void Worker::DoInventory(const std::wstring& rawIdentity) {
         m_inventorySnapshot.scanning = false;
         m_inventorySnapshot.error = "Envanter alinamadi (" + charName + ") — 'inventories' scope var mi?";
         if (m_inventorySnapshot.hasData) m_inventorySnapshot.stale = true;
+        m_inventorySnapshot.lastRefresh = std::chrono::steady_clock::now();
         return;
     }
     if (m_stop) return;
