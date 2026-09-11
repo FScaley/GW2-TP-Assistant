@@ -1352,10 +1352,12 @@ void AddonRender() {
                                             ImGui::EndTooltip();
                                         }
                                     } else {
-                                        ImGui::Text("%s", ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str());
+                                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "%s",
+                                            ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str());
                                         if (ImGui::IsItemHovered())
-                                            ImGui::SetTooltip("En iyi alis emri: %s (1 adet)\n"
-                                                              "VWAP: henuz kitap verisi yok — bir sonraki poll'da dolar.",
+                                            ImGui::SetTooltip("1 adetlik fiyat — derinlik dogrulanmadi!\n"
+                                                              "En iyi alis emri: %s\n"
+                                                              "VWAP: kitap verisi bekleniyor (~5 dk).",
                                                 ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str());
                                     }
 

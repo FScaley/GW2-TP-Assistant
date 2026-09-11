@@ -179,6 +179,7 @@ private:
     void DoCrafting();
     void DoRecipeDownload();
     void DoScan();
+    void StampBook(ScanResult& sr, const std::vector<BookLevel>& buys, const std::vector<BookLevel>& sells);
     void ResolveNames(const std::vector<int>& ids);
 
     GW2ApiClient* m_api = nullptr;

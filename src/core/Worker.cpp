@@ -231,37 +231,9 @@ void Worker::PollOnce() {
                     sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
                 }
             }
-            // Book depth + VWAP from listings
             for (auto& ob : books) {
                 if (ob.itemId == sr.cost.outputItemId) {
-                    sr.hasBook = true;
-                    sr.buyQtyWithin5 = 0;
-                    sr.sellQtyWithin5 = 0;
-                    // Within-5% band: real demand/supply near market price
-                    if (!ob.buys.empty()) {
-                        int top = ob.buys[0].price;
-                        for (auto& lv : ob.buys)
-                            if (lv.price >= top - top / 20) sr.buyQtyWithin5 += lv.qty;
-                    }
-                    if (!ob.sells.empty()) {
-                        int top = ob.sells[0].price;
-                        for (auto& lv : ob.sells)
-                            if (lv.price <= top + top / 20) sr.sellQtyWithin5 += lv.qty;
-                    }
-                    // VWAP: sweep buy-side book for the actual quantity we'd sell
-                    int unitsToSell = sr.orderQty * sr.cost.outputCount;
-                    int remain = unitsToSell;
-                    int rev = 0;
-                    for (auto& lv : ob.buys) {
-                        int take = (std::min)(remain, lv.qty);
-                        rev += ProfitEngine::NetRevenue(lv.price) * take;
-                        remain -= take;
-                        if (remain == 0) break;
-                    }
-                    sr.vwapSellRev = rev;
-                    sr.vwapProfit = rev - sr.cost.totalCost * sr.orderQty;
-                    sr.vwapCovers = (remain == 0);
-                    sr.hasVwap = true;
+                    StampBook(sr, ob.buys, ob.sells);
                     break;
                 }
             }
@@ -712,6 +684,35 @@ void Worker::DoCrafting() {
     }
 }
 
+void Worker::StampBook(ScanResult& sr, const std::vector<BookLevel>& buys, const std::vector<BookLevel>& sells) {
+    sr.hasBook = true;
+    sr.buyQtyWithin5 = 0;
+    sr.sellQtyWithin5 = 0;
+    if (!buys.empty()) {
+        int top = buys[0].price;
+        for (auto& lv : buys)
+            if (lv.price >= top - top / 20) sr.buyQtyWithin5 += lv.qty;
+    }
+    if (!sells.empty()) {
+        int top = sells[0].price;
+        for (auto& lv : sells)
+            if (lv.price <= top + top / 20) sr.sellQtyWithin5 += lv.qty;
+    }
+    int unitsToSell = sr.orderQty * sr.cost.outputCount;
+    int remain = unitsToSell;
+    int rev = 0;
+    for (auto& lv : buys) {
+        int take = (std::min)(remain, lv.qty);
+        rev += ProfitEngine::NetRevenue(lv.price) * take;
+        remain -= take;
+        if (remain == 0) break;
+    }
+    sr.vwapSellRev = rev;
+    sr.vwapProfit = rev - sr.cost.totalCost * sr.orderQty;
+    sr.vwapCovers = (remain == 0);
+    sr.hasVwap = true;
+}
+
 void Worker::DoRecipeDownload() {
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
@@ -946,7 +947,7 @@ void Worker::DoScan() {
         m_scanVolumeIds.assign(volSet.begin(), volSet.end());
     }
 
-    // Stamp existing volume data so Devir doesn't blank after re-scan (m_volume is worker-only).
+    // Stamp existing volume + book data so they survive a rescan (worker-only, no lock).
     {
         auto now = std::chrono::system_clock::now();
         int64_t eh = std::chrono::duration_cast<std::chrono::hours>(now.time_since_epoch()).count();
@@ -962,6 +963,9 @@ void Worker::DoScan() {
                     sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
                 }
             }
+            auto pb = m_prevBooks.find(sr.cost.outputItemId);
+            if (pb != m_prevBooks.end())
+                StampBook(sr, pb->second.buys, pb->second.sells);
         }
     }
 
