@@ -231,9 +231,22 @@ void Worker::PollOnce() {
                     sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
                 }
             }
-            // VWAP: sweep buy-side book for the actual quantity we'd sell
+            // Book depth + VWAP from listings
             for (auto& ob : books) {
                 if (ob.itemId == sr.cost.outputItemId) {
+                    sr.hasBook = true;
+                    // Within-5% band: real demand/supply near market price
+                    if (!ob.buys.empty()) {
+                        int top = ob.buys[0].price;
+                        for (auto& lv : ob.buys)
+                            if (lv.price >= top - top / 20) sr.buyQtyWithin5 += lv.qty;
+                    }
+                    if (!ob.sells.empty()) {
+                        int top = ob.sells[0].price;
+                        for (auto& lv : ob.sells)
+                            if (lv.price <= top + top / 20) sr.sellQtyWithin5 += lv.qty;
+                    }
+                    // VWAP: sweep buy-side book for the actual quantity we'd sell
                     int unitsToSell = sr.orderQty * sr.cost.outputCount;
                     int remain = unitsToSell;
                     int rev = 0;

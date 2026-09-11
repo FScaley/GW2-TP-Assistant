@@ -1207,8 +1207,9 @@ void AddonRender() {
                             ImGui::InputInt("Min Talep", &minDemand, 1000, 5000);
                             if (minDemand < 0) minDemand = 0;
                             if (ImGui::IsItemHovered())
-                                ImGui::SetTooltip("Sadece bu kadar veya daha fazla alis emri olan urunleri goster.\n"
-                                                  "0 = filtre kapalı.");
+                                ImGui::SetTooltip("En iyi fiyatin %%5 bandindaki gercek talep uzerinden filtreler.\n"
+                                                  "5000 toplam talep olsa bile cogu 1c'lik lowball ise filtrelenir.\n"
+                                                  "0 = filtre kapali. Kitap verisi yoksa toplam talep kullanilir.");
 
                             if (ImGui::BeginTable("##scan", 13,
                                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
@@ -1255,8 +1256,10 @@ void AddonRender() {
                                                                 vb = (int)(res[b].hasVwap && res[b].cost.totalCost > 0 ? res[b].vwapProfit * 100.0 / res[b].cost.totalCost : res[b].roiDump); break;
                                                         case 7: va = res[a].hasVwap ? res[a].vwapProfit : res[a].profitPerOrderDump;
                                                                 vb = res[b].hasVwap ? res[b].vwapProfit : res[b].profitPerOrderDump; break;
-                                                        case 8: va = res[a].outputBuyQty; vb = res[b].outputBuyQty; break;
-                                                        case 9: va = res[a].outputSellQty; vb = res[b].outputSellQty; break;
+                                                        case 8: va = res[a].hasBook ? res[a].buyQtyWithin5 : res[a].outputBuyQty;
+                                                                vb = res[b].hasBook ? res[b].buyQtyWithin5 : res[b].outputBuyQty; break;
+                                                        case 9: va = res[a].hasBook ? res[a].sellQtyWithin5 : res[a].outputSellQty;
+                                                                vb = res[b].hasBook ? res[b].sellQtyWithin5 : res[b].outputSellQty; break;
                                                         case 10: {
                                                             auto key = [](const Worker::ScanResult& s) -> double {
                                                                 if (!s.vol.ok) return 1e12;
@@ -1279,8 +1282,12 @@ void AddonRender() {
                                     auto& sr = scanSnap.results[idx];
                                     // Budget filter
                                     if (sr.cost.totalCost > budgetCopper) continue;
-                                    if (onlyDemandFilter && sr.outputBuyQty <= sr.outputSellQty) continue;
-                                    if (minDemand > 0 && sr.outputBuyQty < minDemand) continue;
+                                    {
+                                        int rd = sr.hasBook ? sr.buyQtyWithin5 : sr.outputBuyQty;
+                                        int rs = sr.hasBook ? sr.sellQtyWithin5 : sr.outputSellQty;
+                                        if (onlyDemandFilter && rd <= rs) continue;
+                                        if (minDemand > 0 && rd < minDemand) continue;
+                                    }
                                     if (shown >= 50) break;
                                     shown++;
 
@@ -1397,18 +1404,38 @@ void AddonRender() {
                                         }
                                     }
 
-                                    // Talep (demand)
+                                    // Talep — "within5% / total" when book available
                                     ImGui::TableNextColumn();
-                                    ImGui::Text("%s", FormatQty(sr.outputBuyQty).c_str());
+                                    if (sr.hasBook) {
+                                        ImGui::Text("%s", FormatQty(sr.buyQtyWithin5).c_str());
+                                        ImGui::SameLine(0, 0);
+                                        ImGui::TextDisabled("/%s", FormatQty(sr.outputBuyQty).c_str());
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Piyasa fiyatina yakin (%%5 bant): %d\n"
+                                                              "Toplam alis emri: %d\n"
+                                                              "Yogunluk: %%%.0f — dusukse cogu emir dusuk fiyatli",
+                                                              sr.buyQtyWithin5, sr.outputBuyQty,
+                                                              sr.outputBuyQty > 0 ? sr.buyQtyWithin5 * 100.0 / sr.outputBuyQty : 0);
+                                    } else {
+                                        ImGui::Text("%s", FormatQty(sr.outputBuyQty).c_str());
+                                    }
 
-                                    // Arz (supply) — color by ratio like the watchlist
+                                    // Arz — "within5% / total" when book available
                                     ImGui::TableNextColumn();
                                     {
-                                        float ratio = sr.outputBuyQty > 0 ? (float)sr.outputSellQty / sr.outputBuyQty : 99.0f;
+                                        int realDemand = sr.hasBook ? sr.buyQtyWithin5 : sr.outputBuyQty;
+                                        int realSupply = sr.hasBook ? sr.sellQtyWithin5 : sr.outputSellQty;
+                                        float ratio = realDemand > 0 ? (float)realSupply / realDemand : 99.0f;
                                         ImVec4 supplyCol = ratio < 1.0f ? green : ratio < 3.0f ? yellow : red;
-                                        ImGui::TextColored(supplyCol, "%s", FormatQty(sr.outputSellQty).c_str());
+                                        if (sr.hasBook) {
+                                            ImGui::TextColored(supplyCol, "%s", FormatQty(sr.sellQtyWithin5).c_str());
+                                            ImGui::SameLine(0, 0);
+                                            ImGui::TextDisabled("/%s", FormatQty(sr.outputSellQty).c_str());
+                                        } else {
+                                            ImGui::TextColored(supplyCol, "%s", FormatQty(sr.outputSellQty).c_str());
+                                        }
                                         if (ImGui::IsItemHovered())
-                                            ImGui::SetTooltip("Arz/Talep orani: %.1fx\n"
+                                            ImGui::SetTooltip("Arz/Talep orani (%%5 bant): %.1fx\n"
                                                               "< 1x = alici cok (yesil)\n"
                                                               "1-3x = dengeli (sari)\n"
                                                               "> 3x = satici cok (kirmizi)",

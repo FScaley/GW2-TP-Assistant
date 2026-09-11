@@ -121,7 +121,11 @@ public:
         bool buyRisky = false;           // profitFloor <= 0 && profitDump > 0
         bool thinMarket = false;         // outputSellQty < 10 || outputBuyQty < 10
         bool wideSpread = false;         // sellPrice > 3× buyPrice
-        // VWAP dump: sell orderQty*outputCount into buy-side book depth (from PollOnce)
+        // Order book depth from PollOnce listings
+        bool hasBook = false;
+        int buyQtyWithin5 = 0;           // buy orders within 5% of best price (real demand)
+        int sellQtyWithin5 = 0;          // sell listings within 5% of best price (real supply)
+        // VWAP dump: sell orderQty*outputCount into buy-side book depth
         int vwapSellRev = 0;             // total copper after tax, sweeping buy book
         int vwapProfit = 0;              // vwapSellRev - totalCost
         bool vwapCovers = false;         // book depth can absorb the full quantity
