@@ -63,6 +63,14 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     return &AddonDef;
 }
 
+static const char* QA_ID = "QA_TPASSISTANT";
+static const char* KB_ID = "KB_TPASSISTANT_TOGGLE";
+
+void OnKeybind(const char* aIdentifier, bool aIsRelease) {
+    if (!aIsRelease && std::string(aIdentifier) == KB_ID)
+        g_showWindow = !g_showWindow;
+}
+
 void AddonLoad(AddonAPI_t* aApi) {
     APIDefs = aApi;
     ImGui::SetCurrentContext((ImGuiContext*)APIDefs->ImguiContext);
@@ -99,12 +107,21 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->GUI_Register(RT_Render, AddonRender);
     APIDefs->GUI_Register(RT_OptionsRender, AddonOptions);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.6 loaded.");
+    APIDefs->InputBinds_RegisterWithString(KB_ID, OnKeybind, "ALT+T");
+    APIDefs->QuickAccess_Add(QA_ID, "ICON_TPASSISTANT", "ICON_TPASSISTANT_HOVER", KB_ID, "TP Assistant");
+    APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT",
+        "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
+    APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
+        "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
+
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.7 loaded.");
 }
 
 void AddonUnload() {
     APIDefs->GUI_Deregister(AddonRender);
     APIDefs->GUI_Deregister(AddonOptions);
+    APIDefs->QuickAccess_Remove(QA_ID);
+    APIDefs->InputBinds_Deregister(KB_ID);
 
     if (g_worker) {
         g_worker->Stop();
