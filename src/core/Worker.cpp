@@ -37,6 +37,8 @@ void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& 
     m_scanSnapshot.dbUpdated = m_recipeDb.UpdatedAt();
     m_downloadRequested = false;
     m_scanRequested = false;
+    m_inventoryRequested = false;
+    m_inventorySnapshot = InventorySnapshot{};
 
     m_thread = std::thread(&Worker::Run, this);
 }
@@ -91,6 +93,18 @@ void Worker::RequestRecipeDownload() {
     m_cv.notify_one();
 }
 
+Worker::InventorySnapshot Worker::GetInventorySnapshot() const {
+    std::lock_guard<std::mutex> lock(m_snapshotMutex);
+    return m_inventorySnapshot;
+}
+
+void Worker::RequestInventory(const std::string& characterName) {
+    std::lock_guard<std::mutex> lk(m_cvMutex);
+    m_inventoryCharName = characterName;
+    m_inventoryRequested = true;
+    m_cv.notify_one();
+}
+
 
 void Worker::RequestCraftingSearch(int outputItemId) {
     { std::lock_guard<std::mutex> lk(m_cvMutex); m_craftingSearchId = outputItemId; m_craftingRequested = true; }
@@ -136,7 +150,7 @@ void Worker::Run() {
             [this] { return m_stop.load() || m_forcePoll.load()
                      || m_pnlRequested.load() || m_ordersRequested.load()
                      || m_craftingRequested.load() || m_downloadRequested.load()
-                     || m_scanRequested.load(); });
+                     || m_scanRequested.load() || m_inventoryRequested.load(); });
 
         if (m_stop) break;
 
@@ -146,9 +160,10 @@ void Worker::Run() {
         bool doCrafting = m_craftingRequested.exchange(false);
         bool doDownload = m_downloadRequested.exchange(false);
         bool doScan = m_scanRequested.exchange(false);
+        bool doInventory = m_inventoryRequested.exchange(false);
 
         // Regular poll interval always refreshes prices (and, with it, my orders)
-        if (!doPrice && !doPnl && !doOrders && !doCrafting && !doDownload && !doScan)
+        if (!doPrice && !doPnl && !doOrders && !doCrafting && !doDownload && !doScan && !doInventory)
             doPrice = true;
 
         lock.unlock();
@@ -159,6 +174,7 @@ void Worker::Run() {
         if (doCrafting && !m_stop) DoCrafting();
         if (doDownload && !m_stop) DoRecipeDownload();
         if (doScan && !m_stop) DoScan();
+        if (doInventory && !m_stop) DoInventory();
     }
 }
 
@@ -1032,5 +1048,126 @@ void Worker::DoScan() {
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
         m_scanSnapshot = std::move(ss);
+    }
+}
+
+void Worker::DoInventory() {
+    if (!m_api->HasApiKey()) return;
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_inventorySnapshot.scanning = true;
+    }
+
+    // Use MumbleLink character name if provided, otherwise fall back to API first character
+    std::string charName = m_inventoryCharName;
+    if (charName.empty()) {
+        auto charNames = m_api->GetCharacterNames();
+        if (!m_api->IsLastRequestOk() || charNames.empty()) {
+            std::lock_guard<std::mutex> lock(m_snapshotMutex);
+            if (m_inventorySnapshot.hasData)
+                m_inventorySnapshot.stale = true;
+            m_inventorySnapshot.scanning = false;
+            return;
+        }
+        charName = charNames[0];
+    }
+    if (m_stop) return;
+
+    auto slots = m_api->GetCharacterInventory(charName);
+    if (!m_api->IsLastRequestOk()) {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        if (m_inventorySnapshot.hasData)
+            m_inventorySnapshot.stale = true;
+        m_inventorySnapshot.scanning = false;
+        return;
+    }
+    if (m_stop) return;
+
+    if (slots.empty()) {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_inventorySnapshot = InventorySnapshot{};
+        m_inventorySnapshot.characterName = charName;
+        m_inventorySnapshot.hasData = true;
+        m_inventorySnapshot.lastRefresh = std::chrono::steady_clock::now();
+        return;
+    }
+
+    // Collect unique item IDs
+    std::set<int> uniqueIds;
+    for (auto& s : slots) uniqueIds.insert(s.itemId);
+
+    // Fetch item info in batches of 200
+    bool anyFailed = false;
+    std::vector<ItemInfo> allInfos;
+    {
+        std::vector<int> idVec(uniqueIds.begin(), uniqueIds.end());
+        for (size_t i = 0; i < idVec.size() && !m_stop; i += 200) {
+            size_t end = (std::min)(i + 200, idVec.size());
+            std::vector<int> batch(idVec.begin() + i, idVec.begin() + end);
+            auto infos = m_api->GetItems(batch);
+            if (!m_api->IsLastRequestOk()) anyFailed = true;
+            for (auto& ii : infos) allInfos.push_back(std::move(ii));
+        }
+    }
+    if (m_stop) return;
+
+    // Fetch TP prices for all items + ecto
+    std::vector<int> priceIds(uniqueIds.begin(), uniqueIds.end());
+    if (std::find(priceIds.begin(), priceIds.end(), SalvageCalc::ECTO_ID) == priceIds.end())
+        priceIds.push_back(SalvageCalc::ECTO_ID);
+
+    std::vector<PriceData> allPrices;
+    for (size_t i = 0; i < priceIds.size() && !m_stop; i += 200) {
+        size_t end = (std::min)(i + 200, priceIds.size());
+        std::vector<int> batch(priceIds.begin() + i, priceIds.begin() + end);
+        auto prices = m_api->GetPrices(batch);
+        if (!m_api->IsLastRequestOk()) anyFailed = true;
+        for (auto& pd : prices) allPrices.push_back(pd);
+    }
+    if (m_stop) return;
+
+    // Find ecto price
+    int ectoNetDump = 0;
+    for (auto& pd : allPrices) {
+        if (pd.itemId == SalvageCalc::ECTO_ID && pd.buyPrice > 0) {
+            ectoNetDump = ProfitEngine::NetRevenue(pd.buyPrice);
+            break;
+        }
+    }
+
+    // Evaluate all items
+    auto results = SalvageCalc::EvaluateInventory(slots, allInfos, allPrices, ectoNetDump);
+
+    // Resolve names from nameCache where missing
+    for (auto& r : results) {
+        if (r.name.empty()) {
+            auto it = m_nameCache.find(r.itemId);
+            if (it != m_nameCache.end()) r.name = it->second;
+        } else {
+            m_nameCache[r.itemId] = r.name;
+        }
+    }
+
+    // Compute totals
+    int totalVendor = 0, totalBest = 0;
+    for (auto& r : results) {
+        totalVendor += r.vendorValue * r.count;
+        totalBest += r.bestValue() * r.count;
+    }
+
+    InventorySnapshot snap;
+    snap.items = std::move(results);
+    snap.characterName = charName;
+    snap.lastRefresh = std::chrono::steady_clock::now();
+    snap.hasData = true;
+    snap.stale = anyFailed;
+    snap.scanning = false;
+    snap.totalVendor = totalVendor;
+    snap.totalBest = totalBest;
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_inventorySnapshot = std::move(snap);
     }
 }

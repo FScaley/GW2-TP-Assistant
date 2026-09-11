@@ -104,12 +104,69 @@ std::vector<ItemInfo> GW2ApiClient::GetItems(const std::vector<int>& itemIds) {
         for (auto& item : j) {
             ItemInfo ii;
             ii.id = item["id"].get<int>();
-            ii.name = item["name"].get<std::string>();
-            result.push_back(ii);
+            ii.name = item.value("name", "");
+            ii.rarity = item.value("rarity", "");
+            ii.type = item.value("type", "");
+            ii.level = item.value("level", 0);
+            ii.vendorValue = item.value("vendor_value", 0);
+            if (item.contains("details") && item["details"].contains("type"))
+                ii.subtype = item["details"]["type"].get<std::string>();
+            if (item.contains("flags")) {
+                for (auto& f : item["flags"]) {
+                    std::string flag = f.get<std::string>();
+                    if (flag == "AccountBound") ii.accountBound = true;
+                    if (flag == "SoulboundOnAcquire") ii.soulBound = true;
+                }
+            }
+            result.push_back(std::move(ii));
         }
     } catch (...) {
         m_lastOk = false;
     }
+    return result;
+}
+
+std::vector<std::string> GW2ApiClient::GetCharacterNames() {
+    std::vector<std::string> result;
+    if (m_apiKey.empty()) { m_lastOk = false; return result; }
+    auto resp = m_http.Get(API_HOST, "/v2/characters?access_token=" + m_apiKey);
+    if (!resp || resp->statusCode != 200) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& name : j) result.push_back(name.get<std::string>());
+    } catch (...) { m_lastOk = false; }
+    return result;
+}
+
+std::vector<GW2ApiClient::InventorySlot> GW2ApiClient::GetCharacterInventory(const std::string& characterName) {
+    std::vector<InventorySlot> result;
+    if (m_apiKey.empty()) { m_lastOk = false; return result; }
+
+    std::string encoded;
+    for (char c : characterName) {
+        if (c == ' ') encoded += "%20";
+        else encoded += c;
+    }
+
+    auto resp = m_http.Get(API_HOST,
+        "/v2/characters/" + encoded + "/inventory?access_token=" + m_apiKey);
+    if (!resp || resp->statusCode != 200) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& bag : j["bags"]) {
+            if (bag.is_null()) continue;
+            for (auto& slot : bag["inventory"]) {
+                if (slot.is_null()) continue;
+                InventorySlot is;
+                is.itemId = slot["id"].get<int>();
+                is.count = slot.value("count", 1);
+                is.binding = slot.value("binding", "");
+                result.push_back(is);
+            }
+        }
+    } catch (...) { m_lastOk = false; }
     return result;
 }
 

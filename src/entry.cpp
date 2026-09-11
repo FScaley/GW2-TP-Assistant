@@ -14,6 +14,8 @@
 #include "core/ConfigManager.h"
 #include "core/Worker.h"
 #include "modules/PnLTracker.h"
+#include "modules/SalvageCalc.h"
+#include <json.hpp>
 
 void AddonLoad(AddonAPI_t* aApi);
 void AddonUnload();
@@ -50,8 +52,8 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 8;
-    AddonDef.Version.Build = 8;
+    AddonDef.Version.Minor = 9;
+    AddonDef.Version.Build = 0;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -114,7 +116,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8.8 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.0 loaded.");
 }
 
 void AddonUnload() {
@@ -1546,6 +1548,151 @@ void AddonRender() {
                 ImGui::EndTabItem();
             }
 
+            // === Canta (Inventory Salvage Advisor) Tab ===
+            if (ImGui::BeginTabItem("Canta")) {
+                auto invSnap = g_worker->GetInventorySnapshot();
+
+                // Header: character name + refresh button
+                if (invSnap.hasData) {
+                    ImGui::Text("Karakter: %s", invSnap.characterName.c_str());
+                    ImGui::SameLine();
+                }
+                if (invSnap.scanning) {
+                    ImGui::TextDisabled("Taraniyor...");
+                } else {
+                    if (ImGui::Button("Tara##inv")) {
+                        // Try to get active character name from MumbleLink identity
+                        std::string activeChar;
+                        if (MumbleLink && MumbleLink->Identity[0] != 0) {
+                            try {
+                                std::wstring wident(MumbleLink->Identity);
+                                std::string ident;
+                                ident.reserve(wident.size());
+                                for (wchar_t wc : wident)
+                                    ident.push_back(static_cast<char>(wc & 0x7F));
+                                auto ij = nlohmann::json::parse(ident);
+                                if (ij.contains("name"))
+                                    activeChar = ij["name"].get<std::string>();
+                            } catch (...) {}
+                        }
+                        g_worker->RequestInventory(activeChar);
+                    }
+                }
+
+                if (invSnap.stale) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "(eski veri)");
+                }
+
+                if (invSnap.hasData && !invSnap.items.empty()) {
+                    // Summary line
+                    ImGui::Text("Toplam vendor: %s | Optimal: %s | Fark: %s",
+                        ProfitEngine::FormatCopper(invSnap.totalVendor).c_str(),
+                        ProfitEngine::FormatCopper(invSnap.totalBest).c_str(),
+                        ProfitEngine::FormatCopper(invSnap.totalBest - invSnap.totalVendor).c_str());
+                    ImGui::Separator();
+
+                    // Filter buttons
+                    static int invFilter = 0; // 0=all, 1=salvage, 2=tp, 3=vendor
+                    ImGui::RadioButton("Hepsi", &invFilter, 0); ImGui::SameLine();
+                    ImGui::RadioButton("Salvage", &invFilter, 1); ImGui::SameLine();
+                    ImGui::RadioButton("TP Sat", &invFilter, 2); ImGui::SameLine();
+                    ImGui::RadioButton("Vendor", &invFilter, 3);
+
+                    if (ImGui::BeginTable("##invtable", 7,
+                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_ScrollY,
+                            ImVec2(0, 400))) {
+                        ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthStretch);
+                        ImGui::TableSetupColumn("Adet", ImGuiTableColumnFlags_WidthFixed, 50);
+                        ImGui::TableSetupColumn("Rarity", ImGuiTableColumnFlags_WidthFixed, 70);
+                        ImGui::TableSetupColumn("Vendor", ImGuiTableColumnFlags_WidthFixed, 80);
+                        ImGui::TableSetupColumn("TP(net)", ImGuiTableColumnFlags_WidthFixed, 80);
+                        ImGui::TableSetupColumn("Salvage", ImGuiTableColumnFlags_WidthFixed, 80);
+                        ImGui::TableSetupColumn("Karar", ImGuiTableColumnFlags_WidthFixed, 80);
+                        ImGui::TableSetupScrollFreeze(0, 1);
+                        ImGui::TableHeadersRow();
+
+                        for (auto& item : invSnap.items) {
+                            // Filter
+                            if (invFilter == 1 && item.verdict != SalvageVerdict::SALVAGE) continue;
+                            if (invFilter == 2 && item.verdict != SalvageVerdict::TP_SELL) continue;
+                            if (invFilter == 3 && item.verdict != SalvageVerdict::VENDOR) continue;
+
+                            ImGui::TableNextRow();
+
+                            // Item name (click to copy)
+                            ImGui::TableNextColumn();
+                            ImGui::Selectable(item.name.c_str(), false,
+                                ImGuiSelectableFlags_SpanAllColumns);
+                            if (ImGui::IsItemClicked()) {
+                                ImGui::SetClipboardText(item.name.c_str());
+                            }
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("Tikla: ismi kopyala\nID: %d | Lvl: %d | %s",
+                                    item.itemId, item.level, item.type.c_str());
+
+                            // Count
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%d", item.count);
+
+                            // Rarity (colored)
+                            ImGui::TableNextColumn();
+                            ImVec4 rarCol(1,1,1,1);
+                            if (item.rarity == "Junk") rarCol = ImVec4(0.6f, 0.6f, 0.6f, 1);
+                            else if (item.rarity == "Fine") rarCol = ImVec4(0.38f, 0.57f, 1, 1);
+                            else if (item.rarity == "Masterwork") rarCol = ImVec4(0.12f, 0.8f, 0.12f, 1);
+                            else if (item.rarity == "Rare") rarCol = ImVec4(1, 0.84f, 0, 1);
+                            else if (item.rarity == "Exotic") rarCol = ImVec4(1, 0.55f, 0, 1);
+                            else if (item.rarity == "Ascended") rarCol = ImVec4(1, 0.2f, 0.56f, 1);
+                            else if (item.rarity == "Legendary") rarCol = ImVec4(0.59f, 0.27f, 1, 1);
+                            ImGui::TextColored(rarCol, "%s", item.rarity.c_str());
+
+                            // Vendor value
+                            ImGui::TableNextColumn();
+                            if (item.vendorValue > 0)
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(item.vendorValue).c_str());
+                            else
+                                ImGui::TextDisabled("--");
+
+                            // TP dump net
+                            ImGui::TableNextColumn();
+                            if (!item.binding.empty())
+                                ImGui::TextDisabled("bound");
+                            else if (item.tpDumpNet > 0)
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(item.tpDumpNet).c_str());
+                            else
+                                ImGui::TextDisabled("--");
+
+                            // Salvage EV
+                            ImGui::TableNextColumn();
+                            if (item.salvageEv > 0)
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(item.salvageEv).c_str());
+                            else
+                                ImGui::TextDisabled("--");
+
+                            // Verdict (colored)
+                            ImGui::TableNextColumn();
+                            ImVec4 vCol(1,1,1,1);
+                            if (item.verdict == SalvageVerdict::SALVAGE)
+                                vCol = ImVec4(1, 0.55f, 0, 1);
+                            else if (item.verdict == SalvageVerdict::TP_SELL)
+                                vCol = ImVec4(0.12f, 0.8f, 0.12f, 1);
+                            else if (item.verdict == SalvageVerdict::VENDOR)
+                                vCol = ImVec4(0.6f, 0.6f, 0.6f, 1);
+                            ImGui::TextColored(vCol, "%s", item.verdictText.c_str());
+                        }
+
+                        ImGui::EndTable();
+                    }
+                } else if (!invSnap.hasData && !invSnap.scanning) {
+                    ImGui::TextDisabled("Taramak icin 'Tara' butonuna basin.");
+                    ImGui::TextDisabled("API key'de 'inventories' + 'characters' scope gerekli.");
+                }
+
+                ImGui::EndTabItem();
+            }
+
             ImGui::EndTabBar();
         }
     }
@@ -1554,7 +1701,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.8.8");
+    ImGui::Text("TP Assistant v0.9.0");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

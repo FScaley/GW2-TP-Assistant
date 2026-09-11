@@ -134,6 +134,7 @@ exit /b 0</Command>
     <ClCompile Include="modules\CraftingCalc.cpp" />
     <ClCompile Include="modules\VolumeTracker.cpp" />
     <ClCompile Include="modules\RecipeDatabase.cpp" />
+    <ClCompile Include="modules\SalvageCalc.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

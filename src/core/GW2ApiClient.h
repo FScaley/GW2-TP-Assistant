@@ -8,6 +8,13 @@
 struct ItemInfo {
     int id = 0;
     std::string name;
+    std::string rarity;     // "Junk","Basic","Fine","Masterwork","Rare","Exotic","Ascended","Legendary"
+    std::string type;       // "Weapon","Armor","Trinket","Consumable","Trophy", etc.
+    std::string subtype;    // from details.type: "Sword","Coat", etc. (empty if no details)
+    int level = 0;
+    int vendorValue = 0;    // copper, from vendor_value
+    bool accountBound = false;
+    bool soulBound = false;
 };
 
 struct BookLevel {
@@ -59,6 +66,15 @@ public:
     std::vector<int> SearchRecipeByOutput(int outputItemId);          // returns recipe IDs
     std::vector<int> SearchRecipeByInput(int inputItemId);           // recipes consuming this item
     std::vector<RecipeData> GetRecipes(const std::vector<int>& recipeIds);  // up to 200
+
+    // Inventory endpoints (auth required: characters + inventories scopes)
+    struct InventorySlot {
+        int itemId = 0;
+        int count = 1;
+        std::string binding;  // "" (tradeable), "Account", "Character"
+    };
+    std::vector<std::string> GetCharacterNames();
+    std::vector<InventorySlot> GetCharacterInventory(const std::string& characterName);
 
     // Transaction endpoints (auth required)
     std::vector<TransactionRecord> GetCurrentSells();

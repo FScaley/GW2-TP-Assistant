@@ -8,6 +8,7 @@
 #include "../modules/VolumeTracker.h"
 #include "../modules/CraftingCalc.h"
 #include "../modules/RecipeDatabase.h"
+#include "../modules/SalvageCalc.h"
 #include <vector>
 #include <map>
 #include <cstdint>
@@ -163,6 +164,20 @@ public:
     void RequestScan(const std::string& discipline, int maxRating);
     void RequestRecipeDownload();
 
+    // Inventory salvage analysis
+    struct InventorySnapshot {
+        std::vector<SalvageResult> items;
+        std::string characterName;
+        std::chrono::steady_clock::time_point lastRefresh;
+        bool hasData = false;
+        bool stale = false;
+        bool scanning = false;
+        int totalVendor = 0;    // total value if all vendored
+        int totalBest = 0;      // total value with optimal decisions
+    };
+    InventorySnapshot GetInventorySnapshot() const;
+    void RequestInventory(const std::string& characterName = "");
+
     std::vector<AlertMsg> DrainAlerts();
 
     void SetAlertCallback(AlertCallback cb) { m_alertCb = cb; }
@@ -179,6 +194,7 @@ private:
     void DoCrafting();
     void DoRecipeDownload();
     void DoScan();
+    void DoInventory();
     void StampBook(ScanResult& sr, const std::vector<BookLevel>& buys, const std::vector<BookLevel>& sells);
     void ResolveNames(const std::vector<int>& ids);
 
@@ -220,6 +236,8 @@ private:
     ScanSnapshot m_scanSnapshot;
     std::atomic<bool> m_downloadRequested{false};
     std::atomic<bool> m_scanRequested{false};
+    std::atomic<bool> m_inventoryRequested{false};
+    std::string m_inventoryCharName;  // set by RequestInventory, read by DoInventory
     std::string m_scanDiscipline;
     int m_scanMaxRating = 400;
     struct ChainPair { RecipeInfo tier1; RecipeInfo tier2; };
@@ -229,6 +247,9 @@ private:
     std::map<int, RecipeInfo> m_subRecipeCache;         // craftable sub-ingredients
     std::set<int> m_gatedItemIds;
     bool m_recipesResolved = false;
+
+    // Inventory salvage
+    InventorySnapshot m_inventorySnapshot;
 
     // Scan output IDs whose volume we track alongside the watchlist. Worker-thread only.
     std::vector<int> m_scanVolumeIds;
