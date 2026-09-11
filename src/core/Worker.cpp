@@ -907,7 +907,7 @@ void Worker::DoScan() {
         results.push_back(std::move(sr));
     }
 
-    // Sort by dump profit (guaranteed sale into buy orders) — the honest headline.
+    // Phase 1: Pre-sort by dump profit, keep top-200 candidates for VWAP verification.
     std::stable_sort(results.begin(), results.end(),
         [](const ScanResult& a, const ScanResult& b) {
             return a.profitPerOrderDump > b.profitPerOrderDump;
@@ -917,7 +917,48 @@ void Worker::DoScan() {
     for (auto& r : results)
         if (r.profitDump > 0) profitableCount++;
 
-    // Keep top 50 (profitable + nearest unprofitable for diagnostics)
+    if (results.size() > 200) results.resize(200);
+
+    // Phase 2: Fetch listings for candidates — VWAP reveals which dump profits are fiction.
+    {
+        std::set<int> idSet;
+        for (auto& sr : results) idSet.insert(sr.cost.outputItemId);
+        std::vector<int> bookIds(idSet.begin(), idSet.end());
+
+        bool fetchOk = false;
+        std::vector<OrderBook> books;
+        if (!bookIds.empty() && !m_stop) {
+            books = m_api->GetListings(bookIds);
+            fetchOk = m_api->IsLastRequestOk();
+            if (m_stop) return;
+        }
+
+        for (auto& sr : results) {
+            bool stamped = false;
+            if (fetchOk) {
+                for (auto& ob : books) {
+                    if (ob.itemId == sr.cost.outputItemId) {
+                        StampBook(sr, ob.buys, ob.sells);
+                        stamped = true;
+                        break;
+                    }
+                }
+            }
+            if (!stamped) {
+                auto pb = m_prevBooks.find(sr.cost.outputItemId);
+                if (pb != m_prevBooks.end())
+                    StampBook(sr, pb->second.buys, pb->second.sells);
+            }
+        }
+    }
+
+    // Phase 3: Re-sort by VWAP profit (honest), then keep top-50.
+    std::stable_sort(results.begin(), results.end(),
+        [](const ScanResult& a, const ScanResult& b) {
+            int pa = a.hasVwap ? a.vwapProfit : a.profitPerOrderDump;
+            int pb = b.hasVwap ? b.vwapProfit : b.profitPerOrderDump;
+            return pa > pb;
+        });
     if (results.size() > 50) results.resize(50);
 
     // Resolve names only for results shown (not all 5000 candidates)
@@ -928,7 +969,6 @@ void Worker::DoScan() {
             for (auto& l : sr.cost.lines) nameIds.push_back(l.itemId);
         }
         ResolveNames(nameIds);
-        // Re-apply names to cost lines
         for (auto& sr : results) {
             auto nit = m_nameCache.find(sr.cost.outputItemId);
             if (nit != m_nameCache.end()) sr.cost.outputName = nit->second;
@@ -945,26 +985,6 @@ void Worker::DoScan() {
         for (auto& r : results)
             if (r.cost.profit > 0) volSet.insert(r.cost.outputItemId);
         m_scanVolumeIds.assign(volSet.begin(), volSet.end());
-    }
-
-    // Fetch listings for top-50 results to get VWAP + depth immediately (1 API call).
-    {
-        std::vector<int> bookIds;
-        for (auto& sr : results)
-            bookIds.push_back(sr.cost.outputItemId);
-        if (!bookIds.empty() && !m_stop) {
-            auto books = m_api->GetListings(bookIds);
-            if (m_api->IsLastRequestOk()) {
-                for (auto& sr : results) {
-                    for (auto& ob : books) {
-                        if (ob.itemId == sr.cost.outputItemId) {
-                            StampBook(sr, ob.buys, ob.sells);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // Stamp existing volume data (worker-only, no lock).

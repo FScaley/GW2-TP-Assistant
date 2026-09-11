@@ -51,7 +51,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 8;
-    AddonDef.Version.Build = 2;
+    AddonDef.Version.Build = 8;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -114,7 +114,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8.2 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8.8 loaded.");
 }
 
 void AddonUnload() {
@@ -1549,7 +1549,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.8.2");
+    ImGui::Text("TP Assistant v0.8.8");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";
