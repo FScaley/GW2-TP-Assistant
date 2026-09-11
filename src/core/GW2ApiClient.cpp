@@ -177,6 +177,8 @@ std::vector<GW2ApiClient::InventorySlot> GW2ApiClient::GetCharacterInventory(con
                 is.itemId = slot["id"].get<int>();
                 is.count = slot.value("count", 1);
                 is.binding = slot.value("binding", "");
+                is.hasUpgrade = slot.contains("upgrades") && slot["upgrades"].is_array()
+                                && !slot["upgrades"].empty();
                 result.push_back(is);
             }
         }

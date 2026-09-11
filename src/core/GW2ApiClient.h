@@ -73,7 +73,8 @@ public:
     struct InventorySlot {
         int itemId = 0;
         int count = 1;
-        std::string binding;  // "" (tradeable), "Account", "Character"
+        std::string binding;      // "" (tradeable), "Account", "Character"
+        bool hasUpgrade = false;  // rune/sigil attached (slot "upgrades" array non-empty)
     };
     std::vector<std::string> GetCharacterNames();
     std::vector<InventorySlot> GetCharacterInventory(const std::string& characterName);

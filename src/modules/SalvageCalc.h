@@ -114,11 +114,14 @@ const SalvageProfile* SelectProfile(const ItemInfo& info);
 const std::vector<int>& ExtraPriceIds();
 
 // netPrices: item ID → NetRevenue(buy price) for every fetched item (inventory + ExtraPriceIds).
+// hasUpgrade: Lucent Motes and Symbols/Charms come from the destroyed rune/sigil, so equipment
+// with an empty upgrade slot yields none of them (containers always identify into upgraded gear).
 SalvageResult Evaluate(
     const ItemInfo& info,
     const PriceData& itemPrice,
     const std::map<int, int>& netPrices,
-    const std::string& binding
+    const std::string& binding,
+    bool hasUpgrade = true
 );
 
 std::vector<SalvageResult> EvaluateInventory(

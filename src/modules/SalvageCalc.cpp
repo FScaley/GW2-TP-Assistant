@@ -43,6 +43,17 @@ const SalvageProfile& RareEquipment() {
     return p;
 }
 
+// --- Level 68+ Rare trinkets / back items: ecto only ---
+// The rare table above is an armor+weapon population; trinkets don't yield tier mats or motes
+// the same way, so only the ecto component is credited (biases toward the guaranteed TP sale).
+const SalvageProfile& RareTrinket() {
+    static const SalvageProfile p{
+        "Silver-Fed / Master", KIT_SILVER_FED, 1.0, RARE_ECTO_YIELD, {},
+        true, "trinket/back: sadece ecto sayildi (mat/mote verisi yok)"
+    };
+    return p;
+}
+
 // --- Level 68+ Exotic equipment: ecto only (no research table for mats/motes) ---
 // Talk:Glob_of_Ectoplasm July 2024: 1,000 exotics → 1.25 ecto. Dark Matter is account bound.
 const SalvageProfile& ExoticEquipment() {
@@ -66,7 +77,7 @@ const SalvageProfile& GreenUnidDirect() {
             {MAT_SYMBOL_CONTROL, 0.0005}, {MAT_SYMBOL_ENHANCE, 0.0009}, {MAT_SYMBOL_PAIN, 0.0007},
             {MAT_CHARM_BRILLIANCE, 0.0010}, {MAT_CHARM_POTENCE, 0.0006}, {MAT_CHARM_SKILL, 0.0009},
         },
-        false, "wiki Piece of Unidentified Gear/Salvage Rate, direkt Copper-Fed, 12,690 kutu"
+        false, "wiki Piece of Unidentified Gear/Salvage Rate, direkt Copper-Fed, 12,690 kutu; identify rotasi ~esdeger (+0.03 ecto, farkli mat karisimi)"
     };
     return p;
 }
@@ -116,6 +127,12 @@ int NetOf(const std::map<int, int>& netPrices, int id) {
     return it == netPrices.end() ? 0 : it->second;
 }
 
+bool IsUpgradeDerived(int matId) {
+    return matId == MAT_LUCENT_MOTE ||
+           matId == MAT_SYMBOL_CONTROL || matId == MAT_SYMBOL_ENHANCE || matId == MAT_SYMBOL_PAIN ||
+           matId == MAT_CHARM_BRILLIANCE || matId == MAT_CHARM_POTENCE || matId == MAT_CHARM_SKILL;
+}
+
 } // namespace
 
 const std::vector<int>& ExtraPriceIds() {
@@ -136,9 +153,11 @@ const SalvageProfile* SelectProfile(const ItemInfo& info) {
     if (info.id == GREEN_UNID_GEAR_ID) return &GreenUnidDirect();
     if (info.id == BLUE_UNID_GEAR_ID)  return &BlueUnidDirect();
     if (!IsEquipment(info) || info.level < 68) return nullptr;
-    if (info.rarity == "Rare")   return &RareEquipment();
+    bool trinket = info.type == "Trinket" || info.type == "Back";
+    if (info.rarity == "Rare")   return trinket ? &RareTrinket() : &RareEquipment();
     if (info.rarity == "Exotic") return &ExoticEquipment();
-    if (info.rarity == "Fine" || info.rarity == "Masterwork") return &GreenEquipment();
+    if (info.rarity == "Fine" || info.rarity == "Masterwork")
+        return trinket ? nullptr : &GreenEquipment();   // no research data for green trinkets
     return nullptr;
 }
 
@@ -146,7 +165,8 @@ SalvageResult Evaluate(
     const ItemInfo& info,
     const PriceData& itemPrice,
     const std::map<int, int>& netPrices,
-    const std::string& binding)
+    const std::string& binding,
+    bool hasUpgrade)
 {
     SalvageResult r;
     r.itemId = info.id;
@@ -184,9 +204,12 @@ SalvageResult Evaluate(
             r.note = "Ecto fiyati alinamadi — salvage degeri hesaplanamaz";
         } else {
             r.salvageEcto = static_cast<int>(p->ectoYield * ectoNet);
+            bool skipUpgradeMats = !hasUpgrade && !isUnidContainer;
             double mats = 0;
-            int missing = 0;
+            int considered = 0, missing = 0;
             for (auto& y : p->mats) {
+                if (skipUpgradeMats && IsUpgradeDerived(y.matId)) continue;
+                considered++;
                 int net = NetOf(netPrices, y.matId);
                 if (net > 0) mats += y.rate * net;
                 else missing++;
@@ -196,12 +219,19 @@ SalvageResult Evaluate(
             r.salvageKit = static_cast<int>(p->kitCost * p->kitUses + 0.5);
             r.salvageEv = r.salvageEcto + r.salvageMats - r.salvageKit;
             r.note = p->source;
+            if (skipUpgradeMats && !p->mats.empty()) r.note += " | upgrade yok: mote/charm haric";
+            if (p->ectoYield == 0 && considered > 0 && missing == considered) {
+                r.salvageUnknown = true;
+                r.note = "Mat fiyatlari alinamadi — salvage degeri hesaplanamaz";
+            }
         }
     } else if (info.noSalvage) {
         r.note = "Salvage edilemez (NoSalvage)";
-    } else if (IsEquipment(info) && info.level < 68) {
+    } else if (IsEquipment(info)) {
         r.salvageUnknown = true;
-        r.note = "Level < 68: salvage degeri modellenmedi (ecto yok, dusuk tier mat)";
+        r.note = info.level < 68
+            ? "Level < 68: salvage degeri modellenmedi (ecto yok, dusuk tier mat)"
+            : "Bu tur icin salvage verisi yok";
     }
 
     if (info.rarity == "Junk") {
@@ -257,7 +287,7 @@ std::vector<SalvageResult> EvaluateInventory(
         auto priceIt = priceMap.find(slot.itemId);
         if (priceIt != priceMap.end()) pd = priceIt->second;
 
-        auto sr = Evaluate(*infoIt->second, pd, netPrices, slot.binding);
+        auto sr = Evaluate(*infoIt->second, pd, netPrices, slot.binding, slot.hasUpgrade);
         sr.count = slot.count;
         results.push_back(std::move(sr));
     }

@@ -150,8 +150,41 @@ static void TestCharmsFlipMarginalVerdict() {
 static void TestTrinketGetsEcto() {
     auto info = MakeItem(12347, "Rare Ring", "Rare", "Trinket", 80, 200);
     auto r = Evaluate(info, MakePrice(info.id, 300, 400), g_prices, "");
-    Show("Rare 80 trinket", r);
-    assert(r.salvageEcto > 0 && r.verdict == SalvageVerdict::SALVAGE);
+    Show("Rare 80 trinket (ecto only)", r);
+    assert(r.salvageEcto == static_cast<int>(RARE_ECTO_YIELD * 1870));
+    assert(r.salvageMats == 0 && r.salvageApprox);                   // armor/weapon mat table not applied
+    assert(r.salvageEv == r.salvageEcto - KIT_SILVER_FED);
+    assert(r.verdict == SalvageVerdict::SALVAGE);
+
+    auto green = MakeItem(12358, "Masterwork Amulet", "Masterwork", "Trinket", 80, 120);
+    auto g = Evaluate(green, MakePrice(green.id, 100, 150), g_prices, "");
+    assert(g.salvageUnknown);                                        // no research data → "?"
+    std::cout << "    PASS\n";
+}
+
+static void TestUpgradeGating() {
+    // Motes/charms come from the destroyed rune/sigil: no upgrade → none of the seven upgrade mats.
+    auto info = MakeItem(12357, "Rare Axe, empty slot", "Rare", "Weapon", 80, 264);
+    auto with = Evaluate(info, MakePrice(info.id, 2500, 2600), g_prices, "", true);
+    auto without = Evaluate(info, MakePrice(info.id, 2500, 2600), g_prices, "", false);
+    Show("Rare 80 weapon with upgrade", with);
+    Show("Rare 80 weapon without upgrade", without);
+    assert(without.salvageMats < with.salvageMats);
+    assert(without.salvageEcto == with.salvageEcto);
+    assert(!without.salvageFloor);                                   // skipped mats are not "missing"
+    assert(with.verdict == SalvageVerdict::SALVAGE && without.verdict == SalvageVerdict::TP_SELL);
+    assert(without.note.find("upgrade yok") != std::string::npos);
+
+    // Containers always identify into upgraded gear → gating never applies
+    auto unid = MakeItem(RARE_UNID_GEAR_ID, "Rare Unid", "Rare", "Container", 0, 206);
+    auto u = Evaluate(unid, MakePrice(unid.id, 1774, 1775), g_prices, "", false);
+    assert(u.salvageMats == Evaluate(unid, MakePrice(unid.id, 1774, 1775), g_prices, "", true).salvageMats);
+
+    // Mat-only profile with every mat price missing → unknown, not a confident verdict
+    std::map<int, int> ectoOnly; ectoOnly[ECTO_ID] = g_prices.at(ECTO_ID);
+    auto g = MakeItem(GREEN_UNID_GEAR_ID, "Green Unid", "Masterwork", "Container", 0, 137);
+    auto m = Evaluate(g, MakePrice(g.id, 176, 188), ectoOnly, "");
+    assert(m.salvageUnknown && m.verdict != SalvageVerdict::SALVAGE);
     std::cout << "    PASS\n";
 }
 
@@ -278,6 +311,7 @@ int main() {
     TestRareEquipment_SalvageWins();
     TestCharmsFlipMarginalVerdict();
     TestTrinketGetsEcto();
+    TestUpgradeGating();
     TestExotic();
     TestGreenEquipment();
     TestBoundVariants();

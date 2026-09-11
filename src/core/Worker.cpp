@@ -1148,6 +1148,7 @@ void Worker::DoInventory() {
     // Compute totals
     int totalVendor = 0, totalBest = 0;
     for (auto& r : results) {
+        if (r.verdict == SalvageVerdict::KEEP) continue;
         totalVendor += r.vendorValue * r.count;
         totalBest += r.bestValue() * r.count;
     }
