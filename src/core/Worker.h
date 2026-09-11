@@ -79,8 +79,19 @@ public:
     PnLSummary GetPnLSnapshot() const;
     OrdersSnapshot GetOrdersSnapshot() const;
 
+    // A daily craft chain: tier-1 (gated) + tier-2 (tradeable product).
+    // The user crafts tier-1, then immediately crafts tier-2, and sells tier-2 on TP.
+    struct DailyChain {
+        CostBreakdown tier1;     // gated tier-1 (untradeable — cost only)
+        CostBreakdown tier2;     // tradeable tier-2 product (cost + sell revenue)
+        int totalIngredientCost = 0;   // tier-1 ingredients + tier-2 non-gated ingredients
+        int dailyProfit = 0;           // tier-2 sell revenue - totalIngredientCost
+        double dailyRoi = 0.0;
+        bool complete = false;
+    };
+
     struct CraftingSnapshot {
-        std::vector<CostBreakdown> timeGated;     // the 4 daily gated recipes
+        std::vector<DailyChain> dailyChains;      // full tier-1→tier-2 daily craft chains
         std::vector<CostBreakdown> custom;         // user-added recipes
         std::chrono::steady_clock::time_point lastRefresh;
         bool hasData = false;
@@ -139,10 +150,12 @@ private:
 
     // Crafting: recipe cache (static data), resolved trees, snapshot
     CraftingSnapshot m_craftingSnapshot;
-    std::vector<RecipeInfo> m_gatedRecipes;          // 4 time-gated tier-1
-    std::vector<RecipeInfo> m_customRecipes;          // user-added
-    std::map<int, RecipeInfo> m_subRecipeCache;       // craftable sub-ingredients
-    std::set<int> m_gatedItemIds;                     // hardcoded + dynamically resolved
+    struct ChainPair { RecipeInfo tier1; RecipeInfo tier2; };
+    std::vector<ChainPair> m_dailyChains;             // tier-1→tier-2 pairs
+    std::vector<RecipeInfo> m_gatedRecipes;            // all recipes (tier-1 + tier-2)
+    std::vector<RecipeInfo> m_customRecipes;            // user-added
+    std::map<int, RecipeInfo> m_subRecipeCache;         // craftable sub-ingredients
+    std::set<int> m_gatedItemIds;
     bool m_recipesResolved = false;
 
     // Previous full ladder per item, worker-thread only (never in the snapshot).

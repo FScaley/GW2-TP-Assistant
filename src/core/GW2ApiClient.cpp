@@ -126,6 +126,19 @@ std::vector<int> GW2ApiClient::SearchRecipeByOutput(int outputItemId) {
     return result;
 }
 
+std::vector<int> GW2ApiClient::SearchRecipeByInput(int inputItemId) {
+    std::vector<int> result;
+    std::string path = "/v2/recipes/search?input=" + std::to_string(inputItemId);
+    auto resp = m_http.Get(API_HOST, path);
+    if (!resp || resp->statusCode != 200) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& v : j) result.push_back(v.get<int>());
+    } catch (...) { m_lastOk = false; }
+    return result;
+}
+
 std::vector<RecipeData> GW2ApiClient::GetRecipes(const std::vector<int>& recipeIds) {
     std::vector<RecipeData> result;
     if (recipeIds.empty()) return result;

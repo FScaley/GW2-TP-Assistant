@@ -914,71 +914,107 @@ void AddonRender() {
                                           "En istikrarli altin kazanma yolu.\n"
                                           "Her disiplini 450'ye kasmak gerekir; maliyet icin gw2efficiency.com/crafting/calculator");
 
-                    if (cs.timeGated.empty()) {
-                        ImGui::TextDisabled("  Rece bilgisi cekilemedi");
+                    if (cs.dailyChains.empty()) {
+                        ImGui::TextDisabled("  Recete bilgisi cekilemedi");
                     } else {
-                        int totalProfit = 0, totalProfitI = 0;
+                        int totalProfit = 0;
                         if (ImGui::BeginTable("##tg", 7,
                                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
                                 ImGuiTableFlags_SizingStretchProp)) {
-                            ImGui::TableSetupColumn("Urun", 0, 2.5f);
+                            ImGui::TableSetupColumn("Urun (tier-2)", 0, 2.5f);
                             ImGui::TableSetupColumn("Disiplin", 0, 2.0f);
-                            ImGui::TableSetupColumn("Maliyet", 0, 1.2f);
-                            ImGui::TableSetupColumn("Satis", 0, 1.2f);
-                            ImGui::TableSetupColumn("Kar (sabirli)", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 1.3f);
-                            ImGui::TableSetupColumn("Kar (anlik)", 0, 1.3f);
+                            ImGui::TableSetupColumn("Toplam Maliyet", 0, 1.3f);
+                            ImGui::TableSetupColumn("Satis (tier-2)", 0, 1.2f);
+                            ImGui::TableSetupColumn("Gunluk Kar", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 1.3f);
                             ImGui::TableSetupColumn("ROI", 0, 0.7f);
+                            ImGui::TableSetupColumn("Zincir", 0, 0.5f);
                             ImGui::TableHeadersRow();
 
-                            for (auto& bd : cs.timeGated) {
+                            for (auto& dc : cs.dailyChains) {
                                 ImGui::TableNextRow();
-                                ImGui::PushID(bd.recipeId);
+                                ImGui::PushID(dc.tier1.recipeId);
 
+                                // Product name: tier-2 if available, else tier-1
                                 ImGui::TableNextColumn();
-                                CopyableName(bd.outputName, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                                if (dc.tier2.recipeId > 0)
+                                    CopyableName(dc.tier2.outputName, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                                else
+                                    CopyableName(dc.tier1.outputName + " (satilmaz)", ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
+                                // Disciplines: from tier-1 (that's what you need to level)
                                 ImGui::TableNextColumn();
                                 std::string discs;
-                                for (size_t i = 0; i < bd.disciplines.size(); ++i) {
+                                for (size_t i = 0; i < dc.tier1.disciplines.size(); ++i) {
                                     if (i) discs += ", ";
-                                    discs += bd.disciplines[i];
+                                    discs += dc.tier1.disciplines[i];
                                 }
                                 ImGui::TextDisabled("%s", discs.c_str());
 
+                                // Combined cost
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%s", ProfitEngine::FormatCopper(bd.totalCost).c_str());
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(dc.totalIngredientCost).c_str());
                                 if (ImGui::IsItemHovered()) {
                                     ImGui::BeginTooltip();
-                                    ImGui::Text("Malzeme maliyeti (sabirli alis emri):");
-                                    for (auto& l : bd.lines) {
+                                    ImGui::Text("== Tier-1: %s ==", dc.tier1.outputName.c_str());
+                                    for (auto& l : dc.tier1.lines)
                                         ImGui::Text("  %dx %s = %s%s%s",
                                                     l.count, l.name.c_str(), ProfitEngine::FormatCopper(l.totalCost).c_str(),
                                                     l.vendor ? " (vendor)" : "", l.crafted ? " (craft)" : "");
+                                    if (dc.tier2.recipeId > 0) {
+                                        ImGui::Separator();
+                                        ImGui::Text("== Tier-2: %s ==", dc.tier2.outputName.c_str());
+                                        for (auto& l : dc.tier2.lines) {
+                                            if (l.gated) {
+                                                ImGui::TextDisabled("  %dx %s (yukarida craftlandi)", l.count, l.name.c_str());
+                                            } else {
+                                                ImGui::Text("  %dx %s = %s%s%s",
+                                                            l.count, l.name.c_str(), ProfitEngine::FormatCopper(l.totalCost).c_str(),
+                                                            l.vendor ? " (vendor)" : "", l.crafted ? " (craft)" : "");
+                                            }
+                                        }
                                     }
-                                    ImGui::Separator();
-                                    ImGui::Text("Anlik alis: %s", ProfitEngine::FormatCopper(bd.totalCostInstant).c_str());
                                     ImGui::EndTooltip();
                                 }
 
+                                // Sell revenue (tier-2)
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%s", ProfitEngine::FormatCopper(bd.sellRevenue).c_str());
+                                if (dc.tier2.recipeId > 0)
+                                    ImGui::Text("%s", ProfitEngine::FormatCopper(dc.tier2.sellRevenue).c_str());
+                                else
+                                    ImGui::TextDisabled("--");
+
+                                // Daily profit
+                                ImGui::TableNextColumn();
+                                if (dc.tier2.recipeId > 0) {
+                                    ImGui::TextColored(dc.dailyProfit > 0 ? green : red, "%s",
+                                                       ProfitEngine::FormatCopper(dc.dailyProfit).c_str());
+                                    totalProfit += dc.dailyProfit;
+                                } else {
+                                    ImGui::TextDisabled("--");
+                                }
 
                                 ImGui::TableNextColumn();
-                                ImGui::TextColored(bd.profit > 0 ? green : red, "%s",
-                                                   ProfitEngine::FormatCopper(bd.profit).c_str());
-                                totalProfit += bd.profit;
+                                if (dc.dailyRoi != 0.0)
+                                    ImGui::TextColored(dc.dailyRoi > 5 ? green : dc.dailyRoi > 0 ? yellow : red, "%.0f%%", dc.dailyRoi);
+                                else
+                                    ImGui::TextDisabled("--");
 
                                 ImGui::TableNextColumn();
-                                ImGui::TextColored(bd.profitInstant > 0 ? green : red, "%s",
-                                                   ProfitEngine::FormatCopper(bd.profitInstant).c_str());
-                                totalProfitI += bd.profitInstant;
+                                if (dc.tier2.recipeId > 0) {
+                                    ImGui::TextColored(green, "OK");
+                                    if (ImGui::IsItemHovered())
+                                        ImGui::SetTooltip("Tam zincir: %s -> %s -> sat",
+                                                          dc.tier1.outputName.c_str(), dc.tier2.outputName.c_str());
+                                } else {
+                                    ImGui::TextColored(yellow, "T1");
+                                    if (ImGui::IsItemHovered())
+                                        ImGui::SetTooltip("Tier-2 urun bulunamadi. Tier-1 cikti satilmaz.\n"
+                                                          "Kar hesaplanamadi — recete hesaplayiciya tier-2 ID gir.");
+                                }
 
-                                ImGui::TableNextColumn();
-                                ImGui::TextColored(bd.roi > 5 ? green : bd.roi > 0 ? yellow : red, "%.0f%%", bd.roi);
-
-                                if (!bd.complete) {
+                                if (!dc.complete) {
                                     ImGui::SameLine();
-                                    ImGui::TextColored(yellow, " (?)");
+                                    ImGui::TextColored(yellow, "(?)");
                                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bazi fiyatlar eksik.");
                                 }
                                 ImGui::PopID();
@@ -986,9 +1022,8 @@ void AddonRender() {
                             ImGui::EndTable();
                         }
                         ImGui::TextColored(totalProfit > 0 ? green : red,
-                            "Toplam gunluk: %s (sabirli) / %s (anlik)",
-                            ProfitEngine::FormatCopper(totalProfit).c_str(),
-                            ProfitEngine::FormatCopper(totalProfitI).c_str());
+                            "Toplam gunluk (tum zincirler): %s",
+                            ProfitEngine::FormatCopper(totalProfit).c_str());
                         ImGui::TextDisabled("Leveling maliyeti degisken — gw2efficiency.com/crafting/calculator kullan");
 
                         // Config field for user-entered leveling cost

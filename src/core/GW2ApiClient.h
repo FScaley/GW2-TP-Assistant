@@ -56,6 +56,7 @@ public:
 
     // Recipe endpoints (no auth)
     std::vector<int> SearchRecipeByOutput(int outputItemId);          // returns recipe IDs
+    std::vector<int> SearchRecipeByInput(int inputItemId);           // recipes consuming this item
     std::vector<RecipeData> GetRecipes(const std::vector<int>& recipeIds);  // up to 200
 
     // Transaction endpoints (auth required)

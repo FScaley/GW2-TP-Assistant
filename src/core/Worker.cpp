@@ -441,145 +441,73 @@ static RecipeInfo ToRecipeInfo(const RecipeData& rd, const std::set<int>& gatedI
 }
 
 void Worker::DoCrafting() {
-    // Phase 1: Resolve recipes (once). The 4 time-gated tier-1 are AccountBound (untradeable).
-    // Their tier-2 PRODUCTS (Bolt of Damask etc.) are tradeable — we price those.
-    // So the daily craft chain is: buy ingredients → craft tier-1 → craft tier-2 → sell tier-2.
+    // Phase 1: Resolve the full daily craft chains (once).
+    // For each gated tier-1: SearchRecipeByInput → find the tier-2 recipe that consumes it.
+    // Daily profit = tier-2 sell price - (tier-1 ingredients + tier-2 non-gated ingredients).
     if (!m_recipesResolved) {
         m_gatedRecipes.clear();
         m_subRecipeCache.clear();
+        m_dailyChains.clear();
 
-        // Tier-1 gated recipes (verified API IDs: 46742, 46740, 46744, 46745)
-        std::vector<RecipeInfo> tier1Recipes;
         for (int gatedId : m_gatedItemIds) {
-            auto rIds = m_api->SearchRecipeByOutput(gatedId);
             if (m_stop) return;
-            if (!rIds.empty()) {
-                auto recipes = m_api->GetRecipes(rIds);
-                if (m_stop) return;
-                for (auto& rd : recipes) {
-                    if (rd.minRating >= 400) {
-                        tier1Recipes.push_back(ToRecipeInfo(rd, m_gatedItemIds));
-                        break;  // one recipe per gated item is enough
-                    }
-                }
-            }
-        }
 
-        // Tier-2 products: find recipes that USE a gated item as ingredient
-        // e.g. Bolt of Damask recipe uses Spool of Silk Weaving Thread (46740)
-        for (auto& t1 : tier1Recipes) {
-            // search?input= finds recipes consuming this gated item
-            auto t2Ids = m_api->SearchRecipeByOutput(0);  // not this; we need search by INPUT
-            // Actually the API has /v2/recipes/search?input=ITEM_ID but our client doesn't have it yet
-            // So we use a different approach: search for known tier-2 products
-        }
-
-        // Simpler approach: search for tier-2 products by checking what recipes consume each gated item.
-        // Since we don't have SearchRecipeByInput, we resolve the tier-2 from known product IDs
-        // and from recipes that reference gated items.
-        // Known tier-2 product: 46741 (Bolt of Damask). Find others by checking recipes.
-        std::vector<int> tier2Candidates = {46741};  // Bolt of Damask (verified)
-        // Try to find Deldrimor Steel Ingot, Elonian Leather Square, Spiritwood Plank
-        // They share the pattern: recipe uses one gated item + other ingredients, rating=450
-        // We don't have search-by-input, so we use item IDs from the API verification:
-        // The tier-2 items are in the same ID range. Check items 46738-46750 that are Refinement recipes.
-        // Actually, let's just add SearchRecipeByInput support... but that's another API method.
-        // For now: hardcode the 4 tier-2 IDs (they're as stable as the tier-1s, same 2013 release).
-        // From API: Bolt of Damask=46741, Xunlai Electrum Ingot=46743 (Jeweler, not daily-gated craft)
-        // We need to find the other 3. The verification agent showed 46743 is Xunlai Electrum (Jeweler).
-        // Let's search directly: what recipes output the IDs that are Refinement type and rating 450?
-
-        // Actually the simplest correct approach: for EACH tier-1, the tier-2 product name is known.
-        // We search by output for items named "Deldrimor Steel Ingot" etc.
-        // But we don't have name search. So let's just resolve the chain differently:
-        // We show BOTH tiers: the gated tier-1 craft cost + the tier-2 craft cost.
-        // Daily profit = tier-2 sell price - (tier-1 ingredients + tier-2 non-gated ingredients).
-        // This means: for each gated tier-1, find the tier-2 recipe that consumes it.
-        // We need SearchRecipeByInput for that. Let me add it to the API client.
-
-        // For now: just show the tier-1 gated recipes with their ingredient costs.
-        // The tier-1 items are UNTRADEABLE (AccountBound), so we can't compute "sell revenue" for them.
-        // Instead, we look up the full chain: tier-1 + tier-2.
-        // Store tier-1 recipes for cost calculation, and find tier-2 recipes separately.
-
-        // Let's take the practical path: we know the tier-2 IDs from the wiki.
-        // Bolt of Damask = 46741 (verified), and the remaining 3 tier-2 products.
-        // From research: Deldrimor Steel Ingot, Elonian Leather Square, Spiritwood Plank
-        // Let's find their IDs by searching recipes by output for items we know exist.
-
-        // PRAGMATIC: store the combined chain (tier-1 + tier-2) as one "daily craft" entry.
-        // We resolve the full tier-2 recipes which list tier-1 as an ingredient.
-        // The profit = tier-2 sell price - (tier-1 ingredients cost + tier-2 other ingredients cost).
-
-        // Resolve tier-2 recipes for items we know: 46741 (Bolt of Damask)
-        // For others: try items/search isn't available, so use recipes that output near the known range
-        // or just resolve ALL tier-2 from recipes that reference our gated items.
-
-        // SIMPLEST CORRECT: just show the 4 tier-1 daily gated recipes. They're untradeable,
-        // but we show: "craft cost → opportunity cost if you sell the tier-2 product".
-        // The user clicks to see the full chain. Since tier-1 is gated, the ONLY cost is ingredients.
-        // We store the full chain (tier-1 ingredients + tier-2 recipe) as one entry.
-
-        // For Bolt of Damask (46741): recipe 7309, needs 46740 (gated) + 19740 + 19742 + 19744
-        // Total daily cost = tier-1 ingredients + tier-2 non-gated ingredients
-        // Daily revenue = sell Bolt of Damask on TP
-
-        // Resolve tier-2 recipes
-        auto damaskIds = m_api->SearchRecipeByOutput(46741);
-        if (m_stop) return;
-        // Also try to find the other tier-2 products. Their IDs aren't contiguous with the tier-1s.
-        // The simplest approach: look at what recipes each gated tier-1 is an ingredient of.
-        // We need a SearchRecipeByInput endpoint.
-
-        // Let me just resolve the tier-2 for ALL known gated items.
-        // We'll add SearchRecipeByInput to the API and use it.
-        // For this first version, let's resolve what we can.
-
-        // The tier-2 recipe for Bolt of Damask (46741) is known: recipe 7309.
-        // Let's just resolve all tier-2 products properly.
-        // From the research: the 4 pairs are:
-        // 46740 (Silk Weaving Thread) → 46741 (Bolt of Damask) recipe 7309
-        // 46742 (Mithrillium) → Deldrimor Steel Ingot (unknown ID)
-        // 46744 (Elder Spirit Residue) → Spiritwood Plank (unknown ID)
-        // 46745 (Elonian Cord) → Elonian Leather Square (unknown ID)
-        // Let's use GetItems on the tier-1 items to find names, then figure out the tier-2.
-
-        // Actually, let me just hardcode the full set. The API verification showed recipe 7309 has
-        // ingredients including item 46740. Let's search for recipes that output items consuming
-        // each gated ID. We need the input search for that.
-
-        // FINAL PRACTICAL APPROACH: Show the 4 tier-1 gated recipes for now.
-        // Their outputs are untradeable, but we show: "Ingredients = X copper → craft → use in tier-2".
-        // The Crafting tab's value is answering "which discipline to level" — ingredient cost alone does that.
-        // The tier-2 sell price can be added when we have SearchRecipeByInput.
-        m_gatedRecipes = tier1Recipes;
-
-        // Also resolve Bolt of Damask (46741) as a tier-2 example
-        if (!damaskIds.empty()) {
-            auto damaskR = m_api->GetRecipes(damaskIds);
-            if (m_stop) return;
-            for (auto& rd : damaskR) {
+            // Tier-1: how to craft the gated item
+            auto t1Ids = m_api->SearchRecipeByOutput(gatedId);
+            if (m_stop || t1Ids.empty()) continue;
+            auto t1Recipes = m_api->GetRecipes(t1Ids);
+            if (m_stop) continue;
+            RecipeInfo tier1;
+            bool foundT1 = false;
+            for (auto& rd : t1Recipes) {
                 if (rd.minRating >= 400) {
-                    m_gatedRecipes.push_back(ToRecipeInfo(rd, m_gatedItemIds));
+                    tier1 = ToRecipeInfo(rd, m_gatedItemIds);
+                    foundT1 = true;
                     break;
                 }
             }
+            if (!foundT1) continue;
+
+            // Tier-2: recipes that consume this gated item → the tradeable product
+            auto t2Ids = m_api->SearchRecipeByInput(gatedId);
+            if (m_stop) continue;
+
+            RecipeInfo tier2;
+            bool foundT2 = false;
+            if (!t2Ids.empty()) {
+                // Batch fetch (could be many — Vision Crystal etc.)
+                std::vector<int> batch(t2Ids.begin(), t2Ids.begin() + (std::min)(t2Ids.size(), (size_t)200));
+                auto t2Recipes = m_api->GetRecipes(batch);
+                if (m_stop) continue;
+
+                // Pick the Refinement recipe at rating >= 400 whose output uses this gated item
+                for (auto& rd : t2Recipes) {
+                    if (rd.minRating < 400) continue;
+                    bool usesGated = false;
+                    for (auto& ing : rd.ingredients)
+                        if (ing.first == gatedId) { usesGated = true; break; }
+                    if (!usesGated) continue;
+                    tier2 = ToRecipeInfo(rd, m_gatedItemIds);
+                    foundT2 = true;
+                    break;
+                }
+            }
+
+            m_gatedRecipes.push_back(tier1);
+            if (foundT2) m_gatedRecipes.push_back(tier2);
+            m_dailyChains.push_back({tier1, foundT2 ? tier2 : RecipeInfo{}});
         }
 
-        // BFS: collect ingredient IDs, find sub-recipes for craftable ones
-        std::set<int> allItemIds;
+        // BFS: collect ingredient IDs, resolve sub-recipes for craftable ones
         std::set<int> toResolve;
         auto collectIngredients = [&](const RecipeInfo& r) {
-            for (auto& ing : r.ingredients) {
-                allItemIds.insert(ing.itemId);
+            for (auto& ing : r.ingredients)
                 if (!m_gatedItemIds.count(ing.itemId) && !CraftingCalc::DefaultVendorPrices().count(ing.itemId))
                     toResolve.insert(ing.itemId);
-            }
         };
         for (auto& r : m_gatedRecipes) collectIngredients(r);
         for (auto& r : m_customRecipes) collectIngredients(r);
 
-        // One level of sub-recipe resolution (refinements like Mithril Ingot from Ore)
         for (int itemId : toResolve) {
             if (m_stop) return;
             auto subIds = m_api->SearchRecipeByOutput(itemId);
@@ -588,15 +516,11 @@ void Worker::DoCrafting() {
                 for (auto& rd : subRecipes) {
                     if (rd.minRating <= 400) {
                         m_subRecipeCache[itemId] = ToRecipeInfo(rd, m_gatedItemIds);
-                        for (auto& ing : rd.ingredients) allItemIds.insert(ing.first);
                         break;
                     }
                 }
             }
         }
-        for (auto& r : m_gatedRecipes) allItemIds.insert(r.outputItemId);
-        for (auto& r : m_customRecipes) allItemIds.insert(r.outputItemId);
-
         m_recipesResolved = true;
     }
 
@@ -649,25 +573,48 @@ void Worker::DoCrafting() {
     // Resolve names
     ResolveNames(ids);
 
-    // Phase 3: Calculate costs
+    // Phase 3: Calculate costs and build daily chains
     auto vendor = CraftingCalc::DefaultVendorPrices();
     CraftingSnapshot cs;
     cs.hasData = true;
     cs.lastRefresh = std::chrono::steady_clock::now();
 
-    for (auto& r : m_gatedRecipes) {
-        auto bd = CraftingCalc::CalcRecipeCost(r, priceMap, m_subRecipeCache, vendor, m_nameCache, m_gatedItemIds);
-        cs.timeGated.push_back(bd);
+    for (auto& chain : m_dailyChains) {
+        DailyChain dc;
+        dc.tier1 = CraftingCalc::CalcRecipeCost(chain.tier1, priceMap, m_subRecipeCache, vendor, m_nameCache, m_gatedItemIds);
+
+        if (chain.tier2.recipeId > 0) {
+            dc.tier2 = CraftingCalc::CalcRecipeCost(chain.tier2, priceMap, m_subRecipeCache, vendor, m_nameCache, m_gatedItemIds);
+            // Total daily cost = tier-1 ingredients + tier-2 non-gated ingredients
+            // The gated ingredient in the tier-2 recipe costs us the tier-1 crafting cost
+            dc.totalIngredientCost = dc.tier1.totalCost;
+            for (auto& line : dc.tier2.lines) {
+                if (!line.gated) dc.totalIngredientCost += line.totalCost;
+            }
+            dc.dailyProfit = dc.tier2.sellRevenue - dc.totalIngredientCost;
+            dc.dailyRoi = dc.totalIngredientCost > 0 ? dc.dailyProfit * 100.0 / dc.totalIngredientCost : 0.0;
+            dc.complete = dc.tier1.complete && dc.tier2.complete;
+        } else {
+            // No tier-2 found — just show tier-1 cost (untradeable, no sell revenue)
+            dc.totalIngredientCost = dc.tier1.totalCost;
+            dc.dailyProfit = 0;
+            dc.complete = dc.tier1.complete;
+        }
+        cs.dailyChains.push_back(dc);
     }
+
+    // Sort chains by daily profit descending
+    std::stable_sort(cs.dailyChains.begin(), cs.dailyChains.end(),
+        [](const DailyChain& a, const DailyChain& b) {
+            return a.dailyProfit > b.dailyProfit;
+        });
+
     for (auto& r : m_customRecipes) {
         auto bd = CraftingCalc::CalcRecipeCost(r, priceMap, m_subRecipeCache, vendor, m_nameCache, m_gatedItemIds);
         cs.custom.push_back(bd);
     }
-
-    // Sort by profit descending
-    auto byProfit = [](const CostBreakdown& a, const CostBreakdown& b) { return a.profit > b.profit; };
-    std::stable_sort(cs.timeGated.begin(), cs.timeGated.end(), byProfit);
-    std::stable_sort(cs.custom.begin(), cs.custom.end(), byProfit);
+    std::stable_sort(cs.custom.begin(), cs.custom.end(),
+        [](const CostBreakdown& a, const CostBreakdown& b) { return a.profit > b.profit; });
 
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
