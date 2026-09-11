@@ -51,7 +51,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 8;
-    AddonDef.Version.Build = 0;
+    AddonDef.Version.Build = 1;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -114,7 +114,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8.1 loaded.");
 }
 
 void AddonUnload() {
@@ -1241,9 +1241,9 @@ void AddonRender() {
                                                         case 2: va = res[a].cost.minRating; vb = res[b].cost.minRating; break;
                                                         case 3: va = res[a].cost.totalCost; vb = res[b].cost.totalCost; break;
                                                         case 4: va = res[a].cost.sellRevenue; vb = res[b].cost.sellRevenue; break;
-                                                        case 5: va = res[a].cost.profit; vb = res[b].cost.profit; break;
-                                                        case 6: va = (int)res[a].cost.roi; vb = (int)res[b].cost.roi; break;
-                                                        case 7: va = res[a].profitPerOrder; vb = res[b].profitPerOrder; break;
+                                                        case 5: va = res[a].profitDump; vb = res[b].profitDump; break;
+                                                        case 6: va = (int)res[a].roiDump; vb = (int)res[b].roiDump; break;
+                                                        case 7: va = res[a].profitPerOrderDump; vb = res[b].profitPerOrderDump; break;
                                                         case 8: va = res[a].outputBuyQty; vb = res[b].outputBuyQty; break;
                                                         case 9: va = res[a].outputSellQty; vb = res[b].outputSellQty; break;
                                                         case 10: {
@@ -1275,10 +1275,10 @@ void AddonRender() {
                                     ImGui::TableNextRow();
                                     ImGui::PushID(sr.cost.recipeId);
 
-                                    // Product name
+                                    // Product name — green: guaranteed profit, yellow: patient-only, red: loss
                                     ImGui::TableNextColumn();
-                                    ImVec4 nameCol = sr.cost.profitInstant > 0 ? green :
-                                                     sr.cost.profit > 0 ? yellow : red;
+                                    ImVec4 nameCol = sr.profitFloor > 0 ? green :
+                                                     sr.profitDump > 0 ? yellow : red;
                                     CopyableName(sr.cost.outputName, nameCol);
 
                                     // Discipline
@@ -1309,35 +1309,50 @@ void AddonRender() {
                                         ImGui::EndTooltip();
                                     }
 
-                                    // Sell revenue
+                                    // Sell revenue — dump into buy orders (guaranteed)
                                     ImGui::TableNextColumn();
-                                    ImGui::Text("%s", ProfitEngine::FormatCopper(sr.cost.sellRevenue).c_str());
-
-                                    // Profit
-                                    ImGui::TableNextColumn();
-                                    ImGui::TextColored(sr.cost.profit > 0 ? green : red,
-                                        "%s", ProfitEngine::FormatCopper(sr.cost.profit).c_str());
+                                    ImGui::Text("%s", ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str());
                                     if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("Sabirli: %s | Anlik: %s",
-                                            ProfitEngine::FormatCopper(sr.cost.profit).c_str(),
-                                            ProfitEngine::FormatCopper(sr.cost.profitInstant).c_str());
+                                        ImGui::SetTooltip("Alis emirlerine sat: %s (x%d = %s)\n"
+                                                          "Listeleyerek sat: %s\n"
+                                                          "Spread: %.1fx",
+                                            ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str(),
+                                            sr.cost.outputCount,
+                                            ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str(),
+                                            ProfitEngine::FormatCopper(sr.cost.sellRevenue).c_str(),
+                                            sr.outputBuyPrice > 0 ? (double)sr.cost.sellRevenue / sr.sellRevenueDump : 0);
                                     }
 
-                                    // ROI
+                                    // Profit — dump-based (patient ingredient buy + dump output sell)
                                     ImGui::TableNextColumn();
-                                    ImGui::TextColored(sr.cost.roi > 20 ? green : sr.cost.roi > 0 ? yellow : red,
-                                        "%.0f%%", sr.cost.roi);
+                                    ImGui::TextColored(sr.profitDump > 0 ? green : red,
+                                        "%s", ProfitEngine::FormatCopper(sr.profitDump).c_str());
+                                    if (ImGui::IsItemHovered()) {
+                                        ImGui::SetTooltip("Sabirli malzeme + dump satis: %s\n"
+                                                          "Anlik malzeme + dump satis: %s (garanti taban)\n"
+                                                          "Sabirli + listeleyerek: %s (ust sinir)",
+                                            ProfitEngine::FormatCopper(sr.profitDump).c_str(),
+                                            ProfitEngine::FormatCopper(sr.profitFloor).c_str(),
+                                            ProfitEngine::FormatCopper(sr.cost.profit).c_str());
+                                    }
 
-                                    // Profit per order
+                                    // ROI — dump-based
                                     ImGui::TableNextColumn();
-                                    ImGui::TextColored(sr.profitPerOrder > 0 ? green : red,
-                                        "%s", ProfitEngine::FormatCopper(sr.profitPerOrder).c_str());
+                                    ImGui::TextColored(sr.roiDump > 20 ? green : sr.roiDump > 0 ? yellow : red,
+                                        "%.0f%%", sr.roiDump);
+
+                                    // Profit per order — dump-based
+                                    ImGui::TableNextColumn();
+                                    ImGui::TextColored(sr.profitPerOrderDump > 0 ? green : red,
+                                        "%s", ProfitEngine::FormatCopper(sr.profitPerOrderDump).c_str());
                                     if (ImGui::IsItemHovered()) {
                                         ImGui::SetTooltip("Emir boyutu: %d adet (x%d urun = %d birim)\n"
-                                                          "Kar/emir (anlik): %s",
+                                                          "Dump kar/emir: %s\n"
+                                                          "Listele kar/emir: %s (ust sinir)",
                                             sr.orderQty, sr.cost.outputCount,
                                             sr.orderQty * sr.cost.outputCount,
-                                            ProfitEngine::FormatCopper(sr.profitPerOrderInstant).c_str());
+                                            ProfitEngine::FormatCopper(sr.profitPerOrderDump).c_str(),
+                                            ProfitEngine::FormatCopper(sr.profitPerOrder).c_str());
                                     }
 
                                     // Talep (demand)
@@ -1384,7 +1399,7 @@ void AddonRender() {
 
                                     // Durum — priority: ZARAR > SATILMIYOR > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK
                                     ImGui::TableNextColumn();
-                                    if (sr.cost.profit <= 0) {
+                                    if (sr.profitDump <= 0) {
                                         ImGui::TextColored(red, "ZARAR");
                                     } else if (sr.vol.ok && sr.vol.soldPerDay <= 0) {
                                         ImGui::TextColored(red, "SATILMIYOR");
@@ -1402,11 +1417,11 @@ void AddonRender() {
                                     } else if (sr.buyRisky) {
                                         ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "ALIM RISKLI");
                                         if (ImGui::IsItemHovered())
-                                            ImGui::SetTooltip("Sabirli kar: %s | Anlik kar: %s\n"
-                                                              "Anlik karsiz — malzeme alis emirleri dolmayabilir.\n"
-                                                              "Yuksek ROI'nin sebebi genis spread.",
-                                                              ProfitEngine::FormatCopper(sr.cost.profit).c_str(),
-                                                              ProfitEngine::FormatCopper(sr.cost.profitInstant).c_str());
+                                            ImGui::SetTooltip("Dump kar: %s | Garanti taban: %s\n"
+                                                              "Taban karsiz — malzeme alis emirleri dolmayabilir.\n"
+                                                              "Karlilik malzeme fiyatina cok hassas.",
+                                                              ProfitEngine::FormatCopper(sr.profitDump).c_str(),
+                                                              ProfitEngine::FormatCopper(sr.profitFloor).c_str());
                                     } else if (sr.sellRisky) {
                                         ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "SATIS RISKLI");
                                         if (ImGui::IsItemHovered())
@@ -1448,7 +1463,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.8");
+    ImGui::Text("TP Assistant v0.8.1");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

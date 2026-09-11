@@ -106,13 +106,21 @@ public:
     struct ScanResult {
         CostBreakdown cost;
         int orderQty = 0;               // min(250, positionCapital / totalCost)
-        int profitPerOrder = 0;          // profit * orderQty (patient buy-orders)
+        int profitPerOrder = 0;          // profit * orderQty (patient buy-orders, list output)
         int profitPerOrderInstant = 0;   // profitInstant * orderQty
+        // Dump metrics: sell output into buy orders (guaranteed sale)
+        int sellRevenueDump = 0;         // NetRevenue(outputBuyPrice) * outputCount
+        int profitDump = 0;             // sellRevenueDump - totalCost (patient buy ingredients)
+        int profitFloor = 0;            // sellRevenueDump - totalCostInstant (fully guaranteed)
+        double roiDump = 0;
+        int profitPerOrderDump = 0;     // profitDump * orderQty — the headline metric
+        int outputBuyPrice = 0;          // best buy order price for output
         int outputBuyQty = 0;            // TP demand for output
         int outputSellQty = 0;           // TP supply for output
         bool sellRisky = false;          // supply > 3× demand
-        bool buyRisky = false;           // profitInstant <= 0 && profit > 0: ingredient buy orders won't fill
-        bool thinMarket = false;         // outputSellQty < 10 || outputBuyQty < 10: unreliable prices
+        bool buyRisky = false;           // profitFloor <= 0 && profitDump > 0
+        bool thinMarket = false;         // outputSellQty < 10 || outputBuyQty < 10
+        bool wideSpread = false;         // sellPrice > 3× buyPrice
         VolumeEstimate vol;              // from VolumeTracker (populated after PollOnce runs)
         double sellHours = 0;            // (orderQty * outputCount) / hourly sold
         double sharePct = 0;             // units as % of daily sold volume

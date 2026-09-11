@@ -753,14 +753,17 @@ void Worker::DoScan() {
     }
     int outputPriceGot = static_cast<int>(outputPrices.size());
 
-    // Step 2: Pre-filter — skip untradeable, negligible, or empty recipes
+    // Step 2: Pre-filter — skip untradeable, no-demand, or empty recipes.
+    // buyPrice > 0 required: zero buy orders = zero demand = skip (kills junk green/blue gear).
     std::vector<const RecipeDbEntry*> filtered;
     int noSellPrice = 0, lowRevenue = 0;
     for (auto* e : candidates) {
         if (e->ingredients.empty()) continue;
         auto it = outputPrices.find(e->outputItemId);
-        if (it == outputPrices.end() || it->second.sellPrice == 0) { noSellPrice++; continue; }
-        int revenue = ProfitEngine::NetRevenue(it->second.sellPrice) * e->outputCount;
+        if (it == outputPrices.end() || it->second.sellPrice == 0 || it->second.buyPrice == 0) {
+            noSellPrice++; continue;
+        }
+        int revenue = ProfitEngine::NetRevenue(it->second.buyPrice) * e->outputCount;
         if (revenue < 100) { lowRevenue++; continue; }
         filtered.push_back(e);
     }
@@ -847,29 +850,37 @@ void Worker::DoScan() {
         sr.profitPerOrder = sr.cost.profit * sr.orderQty;
         sr.profitPerOrderInstant = sr.cost.profitInstant * sr.orderQty;
 
-        // Output liquidity
+        // Dump metrics: sell output into buy orders (guaranteed sale, not fiction listing)
         auto outIt = outputPrices.find(sr.cost.outputItemId);
         if (outIt != outputPrices.end()) {
+            sr.outputBuyPrice = outIt->second.buyPrice;
             sr.outputBuyQty = outIt->second.buyQty;
             sr.outputSellQty = outIt->second.sellQty;
             sr.sellRisky = sr.outputSellQty > 3 * sr.outputBuyQty && sr.outputBuyQty < 1000;
             sr.thinMarket = sr.outputSellQty < 10 || sr.outputBuyQty < 10;
+            sr.wideSpread = outIt->second.sellPrice > 3 * outIt->second.buyPrice;
+
+            sr.sellRevenueDump = ProfitEngine::NetRevenue(outIt->second.buyPrice) * sr.cost.outputCount;
+            sr.profitDump = sr.sellRevenueDump - sr.cost.totalCost;
+            sr.profitFloor = sr.sellRevenueDump - sr.cost.totalCostInstant;
+            sr.roiDump = sr.cost.totalCost > 0 ? sr.profitDump * 100.0 / sr.cost.totalCost : 0;
+            sr.profitPerOrderDump = sr.profitDump * sr.orderQty;
         }
-        sr.buyRisky = sr.cost.profitInstant <= 0 && sr.cost.profit > 0;
+        sr.buyRisky = sr.profitFloor <= 0 && sr.profitDump > 0;
 
         if (sr.cost.profit <= 0) unprofitableCount++;
         results.push_back(std::move(sr));
     }
 
-    // Sort by profit descending — profitable first, then least-negative
+    // Sort by dump profit (guaranteed sale into buy orders) — the honest headline.
     std::stable_sort(results.begin(), results.end(),
         [](const ScanResult& a, const ScanResult& b) {
-            return a.profitPerOrder > b.profitPerOrder;
+            return a.profitPerOrderDump > b.profitPerOrderDump;
         });
 
     int profitableCount = 0;
     for (auto& r : results)
-        if (r.cost.profit > 0) profitableCount++;
+        if (r.profitDump > 0) profitableCount++;
 
     // Keep top 50 (profitable + nearest unprofitable for diagnostics)
     if (results.size() > 50) results.resize(50);
