@@ -1115,7 +1115,9 @@ void Worker::DoInventory() {
     std::vector<int> priceIds(uniqueIds.begin(), uniqueIds.end());
     for (int mid : {SalvageCalc::ECTO_ID, SalvageCalc::MAT_MITHRIL_ORE,
                     SalvageCalc::MAT_ELDER_WOOD, SalvageCalc::MAT_SILK_SCRAP,
-                    SalvageCalc::MAT_THICK_LEATHER}) {
+                    SalvageCalc::MAT_THICK_LEATHER, SalvageCalc::MAT_ORICHALCUM_ORE,
+                    SalvageCalc::MAT_ANCIENT_WOOD, SalvageCalc::MAT_GOSSAMER_SCRAP,
+                    SalvageCalc::MAT_HARDENED_LEATHER}) {
         if (std::find(priceIds.begin(), priceIds.end(), mid) == priceIds.end())
             priceIds.push_back(mid);
     }

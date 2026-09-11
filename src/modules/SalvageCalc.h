@@ -69,6 +69,10 @@ constexpr int MAT_MITHRIL_ORE = 19700;
 constexpr int MAT_ELDER_WOOD = 19722;
 constexpr int MAT_SILK_SCRAP = 19748;
 constexpr int MAT_THICK_LEATHER = 19732;
+constexpr int MAT_ORICHALCUM_ORE = 19701;
+constexpr int MAT_ANCIENT_WOOD = 19725;
+constexpr int MAT_GOSSAMER_SCRAP = 19745;
+constexpr int MAT_HARDENED_LEATHER = 19735;
 
 struct MatYield { int matId; double rate; };
 
@@ -77,6 +81,8 @@ inline const std::vector<MatYield>& GreenUnidYields() {
     static const std::vector<MatYield> y = {
         {MAT_MITHRIL_ORE, 0.4524}, {MAT_ELDER_WOOD, 0.3139},
         {MAT_SILK_SCRAP, 0.3091}, {MAT_THICK_LEATHER, 0.3171},
+        {MAT_ORICHALCUM_ORE, 0.04}, {MAT_ANCIENT_WOOD, 0.0221},
+        {MAT_GOSSAMER_SCRAP, 0.0173}, {MAT_HARDENED_LEATHER, 0.0189},
     };
     return y;
 }
@@ -86,6 +92,8 @@ inline const std::vector<MatYield>& BlueUnidYields() {
     static const std::vector<MatYield> y = {
         {MAT_MITHRIL_ORE, 0.4499}, {MAT_ELDER_WOOD, 0.308},
         {MAT_SILK_SCRAP, 0.3063}, {MAT_THICK_LEATHER, 0.3237},
+        {MAT_ORICHALCUM_ORE, 0.041}, {MAT_ANCIENT_WOOD, 0.0243},
+        {MAT_GOSSAMER_SCRAP, 0.0173}, {MAT_HARDENED_LEATHER, 0.017},
     };
     return y;
 }

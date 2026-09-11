@@ -14,6 +14,10 @@ static std::map<int, int> MakeMatPrices() {
     m[SalvageCalc::MAT_ELDER_WOOD] = ProfitEngine::NetRevenue(45);      // ~45c
     m[SalvageCalc::MAT_SILK_SCRAP] = ProfitEngine::NetRevenue(120);     // ~1s 20c
     m[SalvageCalc::MAT_THICK_LEATHER] = ProfitEngine::NetRevenue(90);   // ~90c
+    m[SalvageCalc::MAT_ORICHALCUM_ORE] = ProfitEngine::NetRevenue(500); // ~5s
+    m[SalvageCalc::MAT_ANCIENT_WOOD] = ProfitEngine::NetRevenue(200);   // ~2s
+    m[SalvageCalc::MAT_GOSSAMER_SCRAP] = ProfitEngine::NetRevenue(500); // ~5s
+    m[SalvageCalc::MAT_HARDENED_LEATHER] = ProfitEngine::NetRevenue(300);// ~3s
     return m;
 }
 
@@ -119,10 +123,10 @@ static void TestGreenEquipmentSalvage() {
     auto r = SalvageCalc::Evaluate(info, pd, 1728, g_matPrices, "");
     std::cout << "    vendor=" << r.vendorValue << " tpDump=" << r.tpDumpNet
               << " salvageEv=" << r.salvageEv << " verdict=" << r.verdictText << "\n";
-    // salvageEv is computed from tier mats — nonzero
+    // salvageEv from tier mats (including tier 6) should beat vendor
     assert(r.salvageEv > 0);
-    // vendor(88) > salvageEv(80) > tpDump(43) at these test prices -> VENDOR is correct
-    assert(r.verdict == SalvageVerdict::VENDOR);
+    assert(r.salvageEv > r.vendorValue);
+    assert(r.verdict == SalvageVerdict::SALVAGE);
     std::cout << "    PASS\n";
 }
 
