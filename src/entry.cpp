@@ -53,7 +53,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 4;
+    AddonDef.Version.Build = 5;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -116,7 +116,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.4 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.5 loaded.");
 }
 
 void AddonUnload() {
@@ -1661,7 +1661,7 @@ void AddonRender() {
                             else
                                 ImGui::TextDisabled("--");
 
-                            // TP dump net
+                            // TP dump net (listing value in tooltip — not guaranteed)
                             ImGui::TableNextColumn();
                             if (!item.binding.empty())
                                 ImGui::TextDisabled("bound");
@@ -1669,13 +1669,33 @@ void AddonRender() {
                                 ImGui::Text("%s", ProfitEngine::FormatCopper(item.tpDumpNet).c_str());
                             else
                                 ImGui::TextDisabled("--");
+                            if (ImGui::IsItemHovered() && item.binding.empty() && item.tpListNet > 0)
+                                ImGui::SetTooltip("Alis emrine dump (garanti): %s\nListeleme (garanti degil): %s",
+                                    ProfitEngine::FormatCopper(item.tpDumpNet).c_str(),
+                                    ProfitEngine::FormatCopper(item.tpListNet).c_str());
 
                             // Salvage EV
                             ImGui::TableNextColumn();
-                            if (item.salvageEv > 0)
-                                ImGui::Text("%s", ProfitEngine::FormatCopper(item.salvageEv).c_str());
+                            if (item.salvageUnknown)
+                                ImGui::TextDisabled("?");
+                            else if (item.salvageEv > 0)
+                                ImGui::Text("%s%s", ProfitEngine::FormatCopper(item.salvageEv).c_str(),
+                                    item.salvageApprox || item.salvageFloor ? "~" : "");
                             else
                                 ImGui::TextDisabled("--");
+                            if (ImGui::IsItemHovered() && !item.note.empty()) {
+                                if (item.salvageUnknown || item.kitName.empty())
+                                    ImGui::SetTooltip("%s", item.note.c_str());
+                                else
+                                    ImGui::SetTooltip("Ecto: %s\nMat+mote+charm: %s%s\nKit (%s): -%s\n= %s\n%s",
+                                        ProfitEngine::FormatCopper(item.salvageEcto).c_str(),
+                                        ProfitEngine::FormatCopper(item.salvageMats).c_str(),
+                                        item.salvageFloor ? " (bazi fiyatlar eksik, taban)" : "",
+                                        item.kitName.c_str(),
+                                        ProfitEngine::FormatCopper(item.salvageKit).c_str(),
+                                        ProfitEngine::FormatCopper(item.salvageEv).c_str(),
+                                        item.note.c_str());
+                            }
 
                             // Verdict (colored)
                             ImGui::TableNextColumn();
@@ -1686,7 +1706,20 @@ void AddonRender() {
                                 vCol = ImVec4(0.12f, 0.8f, 0.12f, 1);
                             else if (item.verdict == SalvageVerdict::VENDOR)
                                 vCol = ImVec4(0.6f, 0.6f, 0.6f, 1);
-                            ImGui::TextColored(vCol, "%s", item.verdictText.c_str());
+                            else if (item.verdict == SalvageVerdict::KEEP)
+                                vCol = ImVec4(0.4f, 0.7f, 1, 1);
+                            ImGui::TextColored(vCol, "%s%s", item.verdictText.c_str(),
+                                item.salvageUnknown && item.verdict != SalvageVerdict::KEEP ? "?" : "");
+                            if (ImGui::IsItemHovered()) {
+                                if (item.verdict == SalvageVerdict::SALVAGE)
+                                    ImGui::SetTooltip("%s ile salvage et%s", item.kitName.c_str(),
+                                        item.verdictText == "AC+SALVAGE" ? " (once ac/identify)" : "");
+                                else if (item.salvageUnknown)
+                                    ImGui::SetTooltip("Salvage degeri bilinmiyor — karar sadece vendor/TP karsilastirmasi.\n%s",
+                                        item.note.c_str());
+                                else if (!item.note.empty())
+                                    ImGui::SetTooltip("%s", item.note.c_str());
+                            }
                             ImGui::PopID();
                         }
 
@@ -1708,7 +1741,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.9.4");
+    ImGui::Text("TP Assistant v0.9.5");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

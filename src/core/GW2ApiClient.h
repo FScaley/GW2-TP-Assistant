@@ -12,9 +12,11 @@ struct ItemInfo {
     std::string type;       // "Weapon","Armor","Trinket","Consumable","Trophy", etc.
     std::string subtype;    // from details.type: "Sword","Coat", etc. (empty if no details)
     int level = 0;
-    int vendorValue = 0;    // copper, from vendor_value
-    bool accountBound = false;
-    bool soulBound = false;
+    int vendorValue = 0;    // copper, from vendor_value (may be non-zero even with NoSell)
+    bool accountBound = false;  // flag AccountBound
+    bool soulBound = false;     // flag SoulbindOnAcquire
+    bool noSalvage = false;     // flag NoSalvage
+    bool noSell = false;        // flag NoSell
 };
 
 struct BookLevel {

@@ -115,7 +115,9 @@ std::vector<ItemInfo> GW2ApiClient::GetItems(const std::vector<int>& itemIds) {
                 for (auto& f : item["flags"]) {
                     std::string flag = f.get<std::string>();
                     if (flag == "AccountBound") ii.accountBound = true;
-                    if (flag == "SoulboundOnAcquire") ii.soulBound = true;
+                    else if (flag == "SoulbindOnAcquire") ii.soulBound = true;
+                    else if (flag == "NoSalvage") ii.noSalvage = true;
+                    else if (flag == "NoSell") ii.noSell = true;
                 }
             }
             result.push_back(std::move(ii));

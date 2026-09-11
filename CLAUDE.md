@@ -24,6 +24,14 @@ Output: `build\Release\tp-assistant.dll` (or `build\Debug\`). Release post-build
 
 **Dependencies:** nlohmann/json (header-only, `include/json.hpp`), WinHTTP (`winhttp.lib`), Dear ImGui (vendored in `src/imgui/`, Nexus-provided version — do NOT update independently). `src/nexus/` and `src/mumble/` are vendored headers (single `.h` each), not submodules.
 
+## Release Checklist
+
+Nexus auto-updates from the **Latest** GitHub release and decides by comparing `AddonDef.Version` — a new release with an unchanged version number is never picked up.
+
+1. Bump the version in all three places in `src/entry.cpp`: `AddonDef.Version.*`, the `Log(... "loaded.")` string, and the `ImGui::Text` in `AddonOptions`.
+2. Build Release, run the affected `test_*` executables.
+3. Commit + push, then `gh release create vX.Y.Z build/Release/tp-assistant.dll --title vX.Y.Z --notes ...` — the DLL must be attached as an asset. Never delete a published release; supersede it.
+
 ## Tests
 
 Tests are standalone console executables compiled with `cl` from `src/` — no test framework, uses `assert()`. Each test file documents its build command at the top (line 2); check there for the exact `.cpp` dependencies. Verified example:
@@ -67,6 +75,7 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
   - `VolumeTracker` — Estimates Bought/Sold per day from order book deltas across polls. Hourly buckets, 7-day window. Persisted to `volume_history.json`.
   - `CraftingCalc` — Recursive craft-vs-buy cost resolution. Time-gated item IDs hardcoded (4 ascended refinements, stable since 2013). Vendor prices hardcoded for non-TP items.
   - `RecipeDatabase` — Local cache of all ~12.5K recipes from `/v2/recipes`. Compact array JSON format (`recipes_db.json`). Filter by discipline/rating.
+  - `SalvageCalc` — Inventory decision engine: vendor vs TP dump vs salvage per item. Table-driven `SalvageProfile`s (yield rates hand-computed from raw GW2 Wiki `{{SDRL}}` research rows — never from rendered summaries, which misattribute table rows). Kit cost subtracted; Ascended/Legendary → KEEP; missing ecto price or level<68 → `salvageUnknown` ("?"), never a confident verdict.
 
 ### Key Patterns
 
@@ -107,6 +116,7 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
    - **Durum** priority: ZARAR > SATILMIYOR > SIG DERINLIK > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK.
    - **Filters**: "Talep > Arz" checkbox (within-5% band), "Min Talep" input (within-5% band), budget slider. Filter diagnostic shows what was excluded when 0 results.
    - **+ button** adds the output item to the watchlist for full Devir tracking.
+5. **Canta** — Active character's bag (MumbleLink identity → `/v2/characters/:name/inventory`, needs `inventories` + `characters` scopes). Columns: Item, Adet, Rarity, Vendor, TP(net), Salvage, Karar. Karar: VENDOR / TP SAT / SALVAGE / AC+SALVAGE (identify first) / TUT; a trailing `?` means salvage value unknown. Tooltips show the salvage breakdown (ecto + mats − kit) and the non-guaranteed TP listing value.
 
 ### Crafting Scanner Pipeline (DoScan)
 

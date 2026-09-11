@@ -1111,13 +1111,9 @@ void Worker::DoInventory() {
     }
     if (m_stop) return;
 
-    // Fetch TP prices for all items + ecto + tier mats
+    // Fetch TP prices for all items + everything needed to value salvage output
     std::vector<int> priceIds(uniqueIds.begin(), uniqueIds.end());
-    for (int mid : {SalvageCalc::ECTO_ID, SalvageCalc::MAT_MITHRIL_ORE,
-                    SalvageCalc::MAT_ELDER_WOOD, SalvageCalc::MAT_SILK_SCRAP,
-                    SalvageCalc::MAT_THICK_LEATHER, SalvageCalc::MAT_ORICHALCUM_ORE,
-                    SalvageCalc::MAT_ANCIENT_WOOD, SalvageCalc::MAT_GOSSAMER_SCRAP,
-                    SalvageCalc::MAT_HARDENED_LEATHER}) {
+    for (int mid : SalvageCalc::ExtraPriceIds()) {
         if (std::find(priceIds.begin(), priceIds.end(), mid) == priceIds.end())
             priceIds.push_back(mid);
     }
@@ -1132,18 +1128,12 @@ void Worker::DoInventory() {
     }
     if (m_stop) return;
 
-    // Build mat price map + find ecto price
-    int ectoNetDump = 0;
-    std::map<int, int> matNetPrices;
-    for (auto& pd : allPrices) {
-        if (pd.buyPrice > 0) {
-            if (pd.itemId == SalvageCalc::ECTO_ID)
-                ectoNetDump = ProfitEngine::NetRevenue(pd.buyPrice);
-            matNetPrices[pd.itemId] = ProfitEngine::NetRevenue(pd.buyPrice);
-        }
-    }
+    std::map<int, int> netPrices;
+    for (auto& pd : allPrices)
+        if (pd.buyPrice > 0) netPrices[pd.itemId] = ProfitEngine::NetRevenue(pd.buyPrice);
+    bool ectoMissing = netPrices.find(SalvageCalc::ECTO_ID) == netPrices.end();
 
-    auto results = SalvageCalc::EvaluateInventory(slots, allInfos, allPrices, ectoNetDump, matNetPrices);
+    auto results = SalvageCalc::EvaluateInventory(slots, allInfos, allPrices, netPrices);
 
     // Resolve names from nameCache where missing
     for (auto& r : results) {
@@ -1169,7 +1159,7 @@ void Worker::DoInventory() {
     snap.hasData = true;
     snap.stale = anyFailed;
     snap.scanning = false;
-    snap.error.clear();
+    snap.error = ectoMissing ? "Ecto fiyati alinamadi — rare/exotic salvage kararlari '?' olarak gosterilir" : "";
     snap.totalVendor = totalVendor;
     snap.totalBest = totalBest;
 

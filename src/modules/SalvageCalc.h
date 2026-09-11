@@ -5,32 +5,45 @@
 #include <vector>
 #include <map>
 
-// Salvage yield data — approximate expected values.
-// Fine/Masterwork yields vary by level bracket; rare/exotic are level 68+ only.
+// Inventory decision: vendor vs TP dump vs salvage, per item.
+//
+// All yield numbers below were computed by hand from the raw {{SDRL}} data rows of the
+// GW2 Wiki salvage research pages (downloaded 11 Sep 2026, action=raw), NOT from rendered
+// summaries. Per-container value = column total / "Total" (containers opened).
 
 enum class SalvageVerdict {
-    VENDOR,         // sell to vendor (best return)
-    TP_SELL,        // sell on TP (dump into buy orders)
-    SALVAGE,        // salvage for materials
-    TP_LIST,        // list on TP sell side (higher but slower)
-    KEEP,           // soulbound/account-bound, can't sell on TP
-    UNKNOWN         // missing price data
+    VENDOR,
+    TP_SELL,        // dump into buy orders (guaranteed)
+    SALVAGE,
+    TP_LIST,        // informational only, never chosen as verdict
+    KEEP,           // Ascended / Legendary — never salvage or vendor
+    UNKNOWN
 };
 
 struct SalvageResult {
     int itemId = 0;
     std::string name;
     int count = 1;
-    std::string binding;        // "", "Account", "Character"
+    std::string binding;        // slot binding: "", "Account", "Character"
 
-    int vendorValue = 0;        // per unit, from /v2/items vendor_value
-    int tpDumpNet = 0;          // NetRevenue(buyPrice) — sell into buy orders
-    int salvageEv = 0;          // expected copper from salvaging (materials valued at TP dump)
+    int vendorValue = 0;        // 0 when NoSell
+    int tpDumpNet = 0;          // NetRevenue(buy) — 0 when bound or no buy orders
+    int tpListNet = 0;          // NetRevenue(sell - 1) — patient listing, NOT guaranteed
+    int salvageEv = 0;          // ecto + mats − kit, copper per unit
+
+    // Salvage breakdown for the tooltip
+    int salvageEcto = 0;
+    int salvageMats = 0;        // tier mats + Lucent Motes + Symbols/Charms
+    int salvageKit = 0;
+    std::string kitName;
+    bool salvageUnknown = false;   // not modeled or a required price is missing → show "?"
+    bool salvageApprox = false;    // EV uses a proxy table (no direct research data)
+    bool salvageFloor = false;     // some material prices missing → EV is a lower bound
+    std::string note;              // tooltip explanation
 
     SalvageVerdict verdict = SalvageVerdict::UNKNOWN;
-    std::string verdictText;    // Turkish display text
+    std::string verdictText;
 
-    // Item info for display
     std::string rarity;
     std::string type;
     int level = 0;
@@ -38,78 +51,73 @@ struct SalvageResult {
     int bestValue() const {
         int best = vendorValue;
         if (tpDumpNet > best) best = tpDumpNet;
-        if (salvageEv > best) best = salvageEv;
+        if (!salvageUnknown && salvageEv > best) best = salvageEv;
         return best;
     }
 };
 
 namespace SalvageCalc {
 
-// Ecto item ID (Glob of Ectoplasm)
 constexpr int ECTO_ID = 19721;
 
-// Yield rates for level 68+ equipment salvaged with Master/Silver-Fed kit.
-// Wiki "Research:Salvage" — 52K+ sample for rares, 500+ for exotics (verified Sep 2026).
-constexpr double RARE_ECTO_YIELD = 0.9;         // wiki: 0.88-0.90 per level 68+ rare
-constexpr double EXOTIC_ECTO_YIELD = 1.25;      // wiki Talk:Glob_of_Ectoplasm, 500+ sample
+// Unidentified Gear containers (IDs verified against /v2/items, 11 Sep 2026)
+constexpr int RARE_UNID_GEAR_ID  = 83008;   // Piece of Rare Unidentified Gear
+constexpr int GREEN_UNID_GEAR_ID = 84731;   // Piece of Unidentified Gear (Masterwork)
+constexpr int BLUE_UNID_GEAR_ID  = 85016;   // Piece of Common Unidentified Gear (Fine)
 
-// Unidentified Gear containers — identify then salvage (Silver-Fed) yields.
-// Wiki "Piece of Rare Unidentified Gear/Salvage Rate" — 52,207 samples, Sep 2026.
-constexpr int RARE_UNID_GEAR_ID = 83008;
-constexpr double RARE_UNID_ECTO_YIELD = 1.3932; // identify + Silver-Fed salvage, wiki 52K sample
+// Salvage outputs (IDs verified against /v2/items, 11 Sep 2026)
+constexpr int MAT_MITHRIL_ORE      = 19700;
+constexpr int MAT_ELDER_WOOD       = 19722;
+constexpr int MAT_SILK_SCRAP       = 19748;
+constexpr int MAT_THICK_LEATHER    = 19729;   // Thick Leather Section
+constexpr int MAT_ORICHALCUM_ORE   = 19701;
+constexpr int MAT_ANCIENT_WOOD     = 19725;
+constexpr int MAT_GOSSAMER_SCRAP   = 19745;
+constexpr int MAT_HARDENED_LEATHER = 19732;   // Hardened Leather Section
+constexpr int MAT_LUCENT_MOTE      = 89140;
+constexpr int MAT_SYMBOL_CONTROL   = 89098;
+constexpr int MAT_SYMBOL_ENHANCE   = 89141;
+constexpr int MAT_SYMBOL_PAIN      = 89182;
+constexpr int MAT_CHARM_BRILLIANCE = 89103;
+constexpr int MAT_CHARM_POTENCE    = 89258;
+constexpr int MAT_CHARM_SKILL      = 89216;
+// Glob of Dark Matter (exotic salvage, ~0.55/exotic) is account bound → no TP value, excluded.
 
-// Green/Blue Unid Gear — direct salvage (Copper-Fed) yields tier mats.
-// Wiki "Piece_of_Unidentified_Gear/Salvage_Rate" — 12,690 samples.
-// Wiki "Piece_of_Common_Unidentified_Gear/Salvage_Rate" — 35,000 samples.
-constexpr int GREEN_UNID_GEAR_ID = 84731;  // Piece of Unidentified Gear (Masterwork)
-constexpr int BLUE_UNID_GEAR_ID = 83003;   // Piece of Common Unidentified Gear (Fine)
+// Kit cost per use — from the research pages' own #vardefine values (Copper-Fed 3, Silver-Fed 60).
+// Master's Salvage Kit is 1536c / 25 = 61.4c, so Silver-Fed cost also stands in for Master's.
+constexpr int KIT_COPPER_FED = 3;
+constexpr int KIT_SILVER_FED = 60;
 
-// Tier material IDs for salvage value calculation
-constexpr int MAT_MITHRIL_ORE = 19700;
-constexpr int MAT_ELDER_WOOD = 19722;
-constexpr int MAT_SILK_SCRAP = 19748;
-constexpr int MAT_THICK_LEATHER = 19732;
-constexpr int MAT_ORICHALCUM_ORE = 19701;
-constexpr int MAT_ANCIENT_WOOD = 19725;
-constexpr int MAT_GOSSAMER_SCRAP = 19745;
-constexpr int MAT_HARDENED_LEATHER = 19735;
+// Ecto per level 68+ item, Master/Mystic/Silver-Fed class kit (25% rare-material chance).
+// Rare: Wiki Glob_of_Ectoplasm controlled test 0.90; Rare Unid research 45,984 ecto / 51,574
+// rares salvaged = 0.89. 0.88 is used as the conservative floor.
+constexpr double RARE_ECTO_YIELD   = 0.88;
+// Exotic: Talk:Glob_of_Ectoplasm, 2×500 exotics (armor+trinkets 1.258, weapons 1.252), July 2024.
+constexpr double EXOTIC_ECTO_YIELD = 1.25;
 
 struct MatYield { int matId; double rate; };
 
-// Green Unid Gear direct salvage yields (Copper-Fed, wiki 12,690 samples)
-inline const std::vector<MatYield>& GreenUnidYields() {
-    static const std::vector<MatYield> y = {
-        {MAT_MITHRIL_ORE, 0.4524}, {MAT_ELDER_WOOD, 0.3139},
-        {MAT_SILK_SCRAP, 0.3091}, {MAT_THICK_LEATHER, 0.3171},
-        {MAT_ORICHALCUM_ORE, 0.04}, {MAT_ANCIENT_WOOD, 0.0221},
-        {MAT_GOSSAMER_SCRAP, 0.0173}, {MAT_HARDENED_LEATHER, 0.0189},
-    };
-    return y;
-}
+struct SalvageProfile {
+    const char* kitName;
+    int kitCost;            // copper per kit use
+    double kitUses;         // kit uses per item (container: only the rares inside get salvaged)
+    double ectoYield;       // ecto per item
+    std::vector<MatYield> mats;
+    bool approx;            // true when the table is a proxy population
+    const char* source;
+};
 
-// Blue Unid Gear direct salvage yields (Copper-Fed, wiki 35,000 samples)
-inline const std::vector<MatYield>& BlueUnidYields() {
-    static const std::vector<MatYield> y = {
-        {MAT_MITHRIL_ORE, 0.4499}, {MAT_ELDER_WOOD, 0.308},
-        {MAT_SILK_SCRAP, 0.3063}, {MAT_THICK_LEATHER, 0.3237},
-        {MAT_ORICHALCUM_ORE, 0.041}, {MAT_ANCIENT_WOOD, 0.0243},
-        {MAT_GOSSAMER_SCRAP, 0.0173}, {MAT_HARDENED_LEATHER, 0.017},
-    };
-    return y;
-}
+// Returns nullptr when salvage is not modeled for this item.
+const SalvageProfile* SelectProfile(const ItemInfo& info);
 
-// Level 68+ Fine/Masterwork equipment — same tier mats as green unid (approximation)
-inline const std::vector<MatYield>& GreenGearYields() { return GreenUnidYields(); }
+// Every item ID whose TP price is needed to value salvage output (ecto + mats + motes + charms).
+const std::vector<int>& ExtraPriceIds();
 
-// Not modeled: rune/sigil recovery, dark matter (exotic-only ~0.5/exotic),
-// Black Lion kit higher rates, Lucent Motes, Symbols, Charms.
-
-// matNetPrices: material ID → NetRevenue(buy price). Caller fetches once for the batch.
+// netPrices: item ID → NetRevenue(buy price) for every fetched item (inventory + ExtraPriceIds).
 SalvageResult Evaluate(
     const ItemInfo& info,
     const PriceData& itemPrice,
-    int ectoNetDump,
-    const std::map<int, int>& matNetPrices,  // mat ID → net dump value
+    const std::map<int, int>& netPrices,
     const std::string& binding
 );
 
@@ -117,11 +125,7 @@ std::vector<SalvageResult> EvaluateInventory(
     const std::vector<GW2ApiClient::InventorySlot>& slots,
     const std::vector<ItemInfo>& itemInfos,
     const std::vector<PriceData>& itemPrices,
-    int ectoNetDump,
-    const std::map<int, int>& matNetPrices
+    const std::map<int, int>& netPrices
 );
-
-// Helper: compute salvage EV from a yield table + mat prices
-int CalcMatSalvageEv(const std::vector<MatYield>& yields, const std::map<int, int>& matNetPrices);
 
 } // namespace SalvageCalc
