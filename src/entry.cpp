@@ -51,7 +51,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 8;
-    AddonDef.Version.Build = 1;
+    AddonDef.Version.Build = 2;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -114,7 +114,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8.1 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8.2 loaded.");
 }
 
 void AddonUnload() {
@@ -1241,9 +1241,12 @@ void AddonRender() {
                                                         case 2: va = res[a].cost.minRating; vb = res[b].cost.minRating; break;
                                                         case 3: va = res[a].cost.totalCost; vb = res[b].cost.totalCost; break;
                                                         case 4: va = res[a].cost.sellRevenue; vb = res[b].cost.sellRevenue; break;
-                                                        case 5: va = res[a].profitDump; vb = res[b].profitDump; break;
-                                                        case 6: va = (int)res[a].roiDump; vb = (int)res[b].roiDump; break;
-                                                        case 7: va = res[a].profitPerOrderDump; vb = res[b].profitPerOrderDump; break;
+                                                        case 5: va = res[a].hasVwap ? res[a].vwapProfit : res[a].profitDump;
+                                                                vb = res[b].hasVwap ? res[b].vwapProfit : res[b].profitDump; break;
+                                                        case 6: va = (int)(res[a].hasVwap && res[a].cost.totalCost > 0 ? res[a].vwapProfit * 100.0 / res[a].cost.totalCost : res[a].roiDump);
+                                                                vb = (int)(res[b].hasVwap && res[b].cost.totalCost > 0 ? res[b].vwapProfit * 100.0 / res[b].cost.totalCost : res[b].roiDump); break;
+                                                        case 7: va = res[a].hasVwap ? res[a].vwapProfit : res[a].profitPerOrderDump;
+                                                                vb = res[b].hasVwap ? res[b].vwapProfit : res[b].profitPerOrderDump; break;
                                                         case 8: va = res[a].outputBuyQty; vb = res[b].outputBuyQty; break;
                                                         case 9: va = res[a].outputSellQty; vb = res[b].outputSellQty; break;
                                                         case 10: {
@@ -1311,48 +1314,78 @@ void AddonRender() {
 
                                     // Sell revenue — dump into buy orders (guaranteed)
                                     ImGui::TableNextColumn();
-                                    ImGui::Text("%s", ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str());
-                                    if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("Alis emirlerine sat: %s (x%d = %s)\n"
-                                                          "Listeleyerek sat: %s\n"
-                                                          "Spread: %.1fx",
-                                            ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str(),
-                                            sr.cost.outputCount,
-                                            ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str(),
-                                            ProfitEngine::FormatCopper(sr.cost.sellRevenue).c_str(),
-                                            sr.outputBuyPrice > 0 ? (double)sr.cost.sellRevenue / sr.sellRevenueDump : 0);
+                                    if (sr.hasVwap) {
+                                        ImVec4 vCol = sr.vwapCovers ? ImVec4(1,1,1,1) : ImVec4(0.9f, 0.6f, 0.2f, 1.0f);
+                                        ImGui::TextColored(vCol, "%s", ProfitEngine::FormatCopper(sr.vwapSellRev).c_str());
+                                        if (ImGui::IsItemHovered()) {
+                                            ImGui::BeginTooltip();
+                                            ImGui::Text("VWAP: %d birim kitaptan supuruldu%s",
+                                                sr.orderQty * sr.cost.outputCount,
+                                                sr.vwapCovers ? "" : " (YETERSIZ DERINLIK!)");
+                                            ImGui::Separator();
+                                            ImGui::Text("En iyi alis emri: %s (1 adet)",
+                                                ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str());
+                                            ImGui::Text("VWAP gelir: %s (%d birim)",
+                                                ProfitEngine::FormatCopper(sr.vwapSellRev).c_str(),
+                                                sr.orderQty * sr.cost.outputCount);
+                                            ImGui::Text("Listeleyerek sat: %s (ust sinir)",
+                                                ProfitEngine::FormatCopper(sr.cost.sellRevenue).c_str());
+                                            ImGui::EndTooltip();
+                                        }
+                                    } else {
+                                        ImGui::Text("%s", ProfitEngine::FormatCopper(sr.sellRevenueDump).c_str());
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("En iyi alis emri: %s (1 adet)\n"
+                                                              "VWAP: henuz kitap verisi yok — bir sonraki poll'da dolar.",
+                                                ProfitEngine::FormatCopper(sr.outputBuyPrice).c_str());
                                     }
 
-                                    // Profit — dump-based (patient ingredient buy + dump output sell)
+                                    // Profit — VWAP when available, else dump-based
                                     ImGui::TableNextColumn();
-                                    ImGui::TextColored(sr.profitDump > 0 ? green : red,
-                                        "%s", ProfitEngine::FormatCopper(sr.profitDump).c_str());
-                                    if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("Sabirli malzeme + dump satis: %s\n"
-                                                          "Anlik malzeme + dump satis: %s (garanti taban)\n"
-                                                          "Sabirli + listeleyerek: %s (ust sinir)",
-                                            ProfitEngine::FormatCopper(sr.profitDump).c_str(),
-                                            ProfitEngine::FormatCopper(sr.profitFloor).c_str(),
-                                            ProfitEngine::FormatCopper(sr.cost.profit).c_str());
+                                    {
+                                        int showProfit = sr.hasVwap ? sr.vwapProfit : sr.profitDump;
+                                        ImGui::TextColored(showProfit > 0 ? green : red,
+                                            "%s", ProfitEngine::FormatCopper(showProfit).c_str());
+                                        if (ImGui::IsItemHovered()) {
+                                            ImGui::BeginTooltip();
+                                            if (sr.hasVwap)
+                                                ImGui::Text("VWAP kar: %s (kitap derinliginden)",
+                                                    ProfitEngine::FormatCopper(sr.vwapProfit).c_str());
+                                            ImGui::Text("Dump kar (1 adet fiyat): %s",
+                                                ProfitEngine::FormatCopper(sr.profitDump).c_str());
+                                            ImGui::Text("Garanti taban: %s",
+                                                ProfitEngine::FormatCopper(sr.profitFloor).c_str());
+                                            ImGui::Text("Listeleyerek: %s (ust sinir)",
+                                                ProfitEngine::FormatCopper(sr.cost.profit).c_str());
+                                            ImGui::EndTooltip();
+                                        }
                                     }
 
-                                    // ROI — dump-based
+                                    // ROI — VWAP when available
                                     ImGui::TableNextColumn();
-                                    ImGui::TextColored(sr.roiDump > 20 ? green : sr.roiDump > 0 ? yellow : red,
-                                        "%.0f%%", sr.roiDump);
+                                    {
+                                        double showRoi = sr.hasVwap && sr.cost.totalCost > 0
+                                            ? sr.vwapProfit * 100.0 / sr.cost.totalCost : sr.roiDump;
+                                        ImGui::TextColored(showRoi > 20 ? green : showRoi > 0 ? yellow : red,
+                                            "%.0f%%", showRoi);
+                                    }
 
-                                    // Profit per order — dump-based
+                                    // Profit per order — VWAP when available
                                     ImGui::TableNextColumn();
-                                    ImGui::TextColored(sr.profitPerOrderDump > 0 ? green : red,
-                                        "%s", ProfitEngine::FormatCopper(sr.profitPerOrderDump).c_str());
-                                    if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("Emir boyutu: %d adet (x%d urun = %d birim)\n"
-                                                          "Dump kar/emir: %s\n"
-                                                          "Listele kar/emir: %s (ust sinir)",
-                                            sr.orderQty, sr.cost.outputCount,
-                                            sr.orderQty * sr.cost.outputCount,
-                                            ProfitEngine::FormatCopper(sr.profitPerOrderDump).c_str(),
-                                            ProfitEngine::FormatCopper(sr.profitPerOrder).c_str());
+                                    {
+                                        int showPPO = sr.hasVwap ? sr.vwapProfit : sr.profitPerOrderDump;
+                                        ImGui::TextColored(showPPO > 0 ? green : red,
+                                            "%s", ProfitEngine::FormatCopper(showPPO).c_str());
+                                        if (ImGui::IsItemHovered()) {
+                                            ImGui::SetTooltip("Emir boyutu: %d adet (x%d urun = %d birim)\n"
+                                                              "%s: %s\n"
+                                                              "Listele kar/emir: %s (ust sinir)",
+                                                sr.orderQty, sr.cost.outputCount,
+                                                sr.orderQty * sr.cost.outputCount,
+                                                sr.hasVwap ? "VWAP kar" : "Dump kar",
+                                                ProfitEngine::FormatCopper(showPPO).c_str(),
+                                                ProfitEngine::FormatCopper(sr.profitPerOrder).c_str());
+                                        }
                                     }
 
                                     // Talep (demand)
@@ -1397,9 +1430,11 @@ void AddonRender() {
                                                               sr.vol.soldPerDay, sr.sharePct);
                                     }
 
-                                    // Durum — priority: ZARAR > SATILMIYOR > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK
+                                    // Durum — priority: ZARAR > SATILMIYOR > YETERSIZ > INCE > ALIM RISKLI > SATIS RISKLI > OK
                                     ImGui::TableNextColumn();
-                                    if (sr.profitDump <= 0) {
+                                    {
+                                        int effectiveProfit = sr.hasVwap ? sr.vwapProfit : sr.profitDump;
+                                    if (effectiveProfit <= 0) {
                                         ImGui::TextColored(red, "ZARAR");
                                     } else if (sr.vol.ok && sr.vol.soldPerDay <= 0) {
                                         ImGui::TextColored(red, "SATILMIYOR");
@@ -1407,6 +1442,13 @@ void AddonRender() {
                                             ImGui::SetTooltip("Olculdu: %.1f saatte 0 birim satildi.\n"
                                                               "Bu urunu craftlamaya degmez.",
                                                               sr.vol.observedSec / 3600.0);
+                                    } else if (sr.hasVwap && !sr.vwapCovers) {
+                                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "SIG DERINLIK");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Kitap %d birimi karsilamiyor.\n"
+                                                              "Bu kadar urunu dump edemezsin — daha az craft yap\n"
+                                                              "veya listeleyerek sat (yavas).",
+                                                              sr.orderQty * sr.cost.outputCount);
                                     } else if (sr.thinMarket) {
                                         ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "INCE PIYASA");
                                         if (ImGui::IsItemHovered())
@@ -1430,6 +1472,7 @@ void AddonRender() {
                                                               sr.outputSellQty, sr.outputBuyQty);
                                     } else {
                                         ImGui::TextColored(green, "OK");
+                                    }
                                     }
 
                                     // Watchlist'e ekle butonu
@@ -1463,7 +1506,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.8.1");
+    ImGui::Text("TP Assistant v0.8.2");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

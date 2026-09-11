@@ -217,7 +217,7 @@ void Worker::PollOnce() {
         m_volume.Prune(epochHour);
         m_volume.Save(m_dataDir + "\\volume_history.json");
 
-        // Stamp scan results with volume estimates (sell-side only — we craft then sell).
+        // Stamp scan results with volume estimates + VWAP from order book depth.
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
         for (auto& sr : m_scanSnapshot.results) {
             sr.vol = m_volume.Estimate(sr.cost.outputItemId, epochHour);
@@ -229,6 +229,25 @@ void Worker::PollOnce() {
                 if (sph > 0.0) {
                     sr.sellHours = unitsToSell / sph;
                     sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
+                }
+            }
+            // VWAP: sweep buy-side book for the actual quantity we'd sell
+            for (auto& ob : books) {
+                if (ob.itemId == sr.cost.outputItemId) {
+                    int unitsToSell = sr.orderQty * sr.cost.outputCount;
+                    int remain = unitsToSell;
+                    int rev = 0;
+                    for (auto& lv : ob.buys) {
+                        int take = (std::min)(remain, lv.qty);
+                        rev += ProfitEngine::NetRevenue(lv.price) * take;
+                        remain -= take;
+                        if (remain == 0) break;
+                    }
+                    sr.vwapSellRev = rev;
+                    sr.vwapProfit = rev - sr.cost.totalCost;
+                    sr.vwapCovers = (remain == 0);
+                    sr.hasVwap = true;
+                    break;
                 }
             }
         }

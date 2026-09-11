@@ -121,6 +121,11 @@ public:
         bool buyRisky = false;           // profitFloor <= 0 && profitDump > 0
         bool thinMarket = false;         // outputSellQty < 10 || outputBuyQty < 10
         bool wideSpread = false;         // sellPrice > 3× buyPrice
+        // VWAP dump: sell orderQty*outputCount into buy-side book depth (from PollOnce)
+        int vwapSellRev = 0;             // total copper after tax, sweeping buy book
+        int vwapProfit = 0;              // vwapSellRev - totalCost
+        bool vwapCovers = false;         // book depth can absorb the full quantity
+        bool hasVwap = false;            // listings data available
         VolumeEstimate vol;              // from VolumeTracker (populated after PollOnce runs)
         double sellHours = 0;            // (orderQty * outputCount) / hourly sold
         double sharePct = 0;             // units as % of daily sold volume
