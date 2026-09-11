@@ -947,7 +947,27 @@ void Worker::DoScan() {
         m_scanVolumeIds.assign(volSet.begin(), volSet.end());
     }
 
-    // Stamp existing volume + book data so they survive a rescan (worker-only, no lock).
+    // Fetch listings for top-50 results to get VWAP + depth immediately (1 API call).
+    {
+        std::vector<int> bookIds;
+        for (auto& sr : results)
+            bookIds.push_back(sr.cost.outputItemId);
+        if (!bookIds.empty() && !m_stop) {
+            auto books = m_api->GetListings(bookIds);
+            if (m_api->IsLastRequestOk()) {
+                for (auto& sr : results) {
+                    for (auto& ob : books) {
+                        if (ob.itemId == sr.cost.outputItemId) {
+                            StampBook(sr, ob.buys, ob.sells);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Stamp existing volume data (worker-only, no lock).
     {
         auto now = std::chrono::system_clock::now();
         int64_t eh = std::chrono::duration_cast<std::chrono::hours>(now.time_since_epoch()).count();
@@ -963,9 +983,6 @@ void Worker::DoScan() {
                     sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
                 }
             }
-            auto pb = m_prevBooks.find(sr.cost.outputItemId);
-            if (pb != m_prevBooks.end())
-                StampBook(sr, pb->second.buys, pb->second.sells);
         }
     }
 
