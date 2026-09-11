@@ -783,3 +783,199 @@ save/load roundtrip. `test_worker`: API key yokken DoOrders no-op, `hasChecked=f
 - [x] test_worker [7b]
 - [ ] Oyun içi: açık emirle Emirlerim sekmesi; bir alış emrini bilerek düşük ver → OUTBID; dolum → DOLDU
       bildirimi + Son Olaylar + P&L artımlı yenileme
+
+### Faz 7: Crafting Arbitrage Tarayıcı
+
+**Neden:** Kullanıcı malzeme alıp craft edip satarak flipping'den daha iyi kazanabileceğini düşünüyor.
+Haklı — crafting arbitrage'da: (1) malzeme buy-order'ları bitmiş üründen daha hızlı dolar (düşük rekabet),
+(2) craft → sat döngüsü flip'ten daha kısa olabilir, (3) disiplin + rating bilgisi giriş bariyeri = daha
+geniş spread. Addon'un cevaplamasi gereken soru: "Hangi recipe'yi craft edip satarsam en çok kazanırım?"
+
+**Mevcut altyapı (Faz 4):** `CraftingCalc::CalcRecipeCost` recursive maliyet hesabı yapıyor. `DoCrafting`
+time-gated günlük craft zincirlerini + kullanıcının girdiği tek recipe'yi hesaplıyor. Eksik: toplu tarama,
+recipe veritabanı, likidite göstergesi.
+
+**Tasarım:**
+
+#### 7a: Recipe Veritabanı + Cache
+
+**Veri kaynağı:** `/v2/recipes` (auth yok) tüm recipe ID'lerini döner (~12.500). `/v2/recipes?ids=...`
+batch 200 ile detay çeker. Recipe verisi statik (nadiren değişir) → lokal cache.
+
+**Yeni modül: `modules/RecipeDatabase.h/.cpp`**
+```cpp
+struct RecipeDbEntry {
+    int recipeId = 0;
+    int outputItemId = 0;
+    int outputCount = 1;
+    int minRating = 0;
+    std::vector<std::string> disciplines;
+    std::vector<std::pair<int, int>> ingredients; // {itemId, count}
+    bool autoLearned = false;   // "AutoLearned" flag — no recipe sheet needed
+};
+
+class RecipeDatabase {
+public:
+    bool Load(const std::string& path);      // recipes_db.json
+    bool Save(const std::string& path) const; // atomic write
+    bool IsLoaded() const;
+    size_t Size() const;
+    std::string UpdatedAt() const;           // ISO timestamp
+
+    // One-time download: ~63 API calls, ~13 seconds
+    bool DownloadAll(GW2ApiClient* api, std::atomic<bool>& stop,
+                     std::function<void(int done, int total)> progress);
+
+    // Filter — empty discipline = all; returns pointers (lifetime = RecipeDatabase)
+    std::vector<const RecipeDbEntry*> Filter(
+        const std::string& discipline,  // "Chef", "Artificer", "" etc.
+        int maxRating = 500,
+        int minRating = 0
+    ) const;
+
+    // Lookup by output item ID
+    const RecipeDbEntry* FindByOutput(int outputItemId) const; // first match
+    std::vector<const RecipeDbEntry*> FindAllByOutput(int outputItemId) const;
+};
+```
+
+**Cache dosyası:** `recipes_db.json` (~2-3 MB)
+```json
+{
+  "version": 1,
+  "updated": "2026-09-11T14:30:00Z",
+  "count": 12500,
+  "recipes": [
+    [recipeId, outputItemId, outputCount, minRating,
+     ["discipline1", ...], [[ingId, count], ...], autoLearned]
+  ]
+}
+```
+Compact array format — JSON objeleri 12K recipe'de 5+ MB olur, array format ~2 MB.
+
+**İndirme akışı:**
+1. `GET /v2/recipes` → tüm ID'ler (tek çağrı, ~12K integer array)
+2. 200'lük batch'lerle `GET /v2/recipes?ids=...` → ~63 çağrı
+3. Parse + save. Progress callback UI'da gösterilir.
+4. `m_stop` kontrol her batch'ten sonra.
+
+**Worker entegrasyonu:**
+- `m_recipeDb` (RecipeDatabase instance)
+- `m_downloadRequested` atomic flag
+- `DoRecipeDownload()` — Start'ta Load, cache miss veya kullanıcı isteğiyle DownloadAll
+- Recipe DB yüklendiğinde DoCrafting'teki SearchRecipeByOutput çağrıları atlayabilir
+
+#### 7b: Crafting Profit Tarayıcı
+
+**Tarama akışı (DoScan):**
+1. Filter: discipline + rating → aday recipe listesi (ör. Chef 0-400 → ~300 recipe)
+2. Output fiyatları çek (batch 200) — ön-filtre: `sellPrice == 0` (TP'de yok/satılamaz) veya
+   `NetRevenue(sellPrice) × outputCount < 100c` (gelir 1s altı, kâr imkansız) → atla.
+   **ÖNEMLİ: flip spread'e bakılmaz** — craft maliyeti output buyPrice ile ilgisiz; tam tersi,
+   dar flip spread'li itemlar en iyi craft arbitrage hedefleri olabilir.
+3. Kalan adayların (~50-100) tüm ingredient ID'lerini topla.
+   **Sub-recipe çözümleme yapılmaz** — scanner düz (flat) fiyatlandırma kullanır: her malzeme TP'den
+   alınır. Neden: (a) API call sayısını sınırlar, (b) recursive craft farklı disiplinler gerektirir
+   (kullanıcıda olmayabilir). Derin analiz tek-item Reçete Hesaplayıcı'da kalır.
+4. Ingredient fiyatları çek (batch 200)
+5. Her aday için `CraftingCalc::CalcRecipeCost(recipe, prices, EMPTY_MAP, vendor, names, gated)`
+   — subRecipes = boş map (flat pricing)
+6. Sıralama: **kâr/emir** (emir ekonomisi) — aynı Faz 1'deki metrik:
+   `orderQty = min(250, positionCapital / totalCost)`, `profitPerOrder = profit × orderQty`.
+   Tek-craft kâr tuzak: 5c kârlı ×250 stack ile 5g kârlı günde-10-satılan item'ı doğru karşılaştırmak
+   için emir bazlı sıralama şart.
+
+**DÜZELTME (advisor):**
+1. Ön-filtre flip spread'e bakmaz — craft arbitrage'da output buyPrice irrelevant.
+2. Sıralama profitPerOrder (emir ekonomisi), düz profit değil.
+3. `profitInstant` (anlık alım maliyetiyle) de gösterilir — malzeme buy-order dolmama riski
+   (Radiant tuzağının ingredient tarafı). Satır rengi `profitInstant` işaretine göre.
+4. Sub-recipe çözümleme scanner'da yapılmaz (flat pricing). Reçete Hesaplayıcı recursive kalır.
+5. Likidite göstergesi: mevcut dead-book heuristic (arz > 3× talep) → "SATIŞ RİSKLİ" etiketi.
+   Bu arz/talep proxy'si, ölçülmüş Devir değil — tooltip'te açıkça belirtilir.
+6. Recipe DB indirme yalnızca kullanıcı tetikli (Start'ta auto-download yok, PollOnce ile çakışır).
+7. DownloadAll m_stop ile kesilirse Save yapılmaz — yarım DB ile scan yapmak daha kötü.
+8. Filter(discipline) = vector'da "contains" kontrolü, ilk-eleman eşitliği değil.
+
+**Yeni struct'lar:**
+```cpp
+struct ScanResult {
+    CostBreakdown cost;       // mevcut struct — totalCost, totalCostInstant, profit, profitInstant, roi
+    // Emir ekonomisi (Faz 1 metriği)
+    int orderQty = 0;         // min(250, positionCapital / totalCost)
+    int profitPerOrder = 0;   // profit * orderQty (sabırlı)
+    int profitPerOrderInstant = 0; // profitInstant * orderQty (anlık)
+    // Output likidite göstergesi (/v2/commerce/prices'tan)
+    int outputBuyQty = 0;     // TP'deki talep (buy order adedi)
+    int outputSellQty = 0;    // TP'deki arz (sell listing adedi)
+    bool sellRisky = false;   // arz > 3× talep → satış tarafı ölü olabilir
+};
+
+// CraftingSnapshot'a eklenir:
+struct ScanSnapshot {
+    std::vector<ScanResult> results;     // kâra göre sıralı
+    std::string discipline;              // taranan disiplin
+    int maxRating = 0;
+    int recipesScanned = 0;              // toplam taranan
+    int profitable = 0;                  // kârlı olan
+    std::chrono::steady_clock::time_point timestamp;
+    bool hasData = false;
+    bool scanning = false;               // progress göstergesi için
+    float progress = 0.0f;              // 0.0-1.0
+};
+```
+
+**Worker:**
+- `RequestScan(discipline, maxRating)` — scan parametrelerini set + flag
+- `DoScan()` — yukarıdaki akış, her batch sonrası m_stop kontrolü
+- `GetScanSnapshot()` — mutex altında kopyala
+
+**API bütçesi:**
+- İlk tarama (cache yok): ~63 download + ~5 scan = ~68 çağrı, ~15s
+- Cache'li tarama: ~5 price çağrısı, ~2s
+- Kullanıcı tetikli (oto-poll yok)
+
+#### 7c: Tarayıcı UI
+
+**Crafting sekmesine yeni bölüm: "Crafting Firsatlari"**
+
+Bileşenler:
+1. Recipe DB durum satırı: "12.500 recete yuklu (11 Eyl 2026)" veya "Recete DB yok — Indir"
+2. "Indir" / "Guncelle" butonu (recipe DB download)
+3. Filtre satırı: Discipline dropdown (Hepsi/Chef/Artificer/...) + Rating aralığı (0-500)
+4. "Tara" butonu → DoScan tetikler
+5. Progress bar (scanning sırasında)
+6. Sonuç tablosu:
+   | Urun | Disiplin | Rating | Maliyet | Satis | **Kar (sabirli)** | **Kar (anlik)** | Kar/Emir | ROI | Durum |
+   - Satır rengi: `profitInstant` > 0 yeşil, <= 0 kırmızı (anlık kâr = gerçekçi alt sınır)
+   - Durum: `sellRisky` = "SATIŞ RİSKLİ" (arz > 3× talep, mevcut dead-book heuristic)
+   - Tooltip: malzeme listesi + arz/talep sayıları ("Bu arz/talep proxy — Devir icin Watchlist'e ekle")
+   - Sıralama: kâr/emir'e göre (varsayılan)
+   - Opsiyonel: "Watchlist'e Ekle" butonu → Devir ölçümü başlar
+7. "Recete Hesaplayici" bölümü aynen kalır (tek item arama)
+
+**Discipline listesi:** `{"", "Armorsmith", "Artificer", "Chef", "Huntsman",
+"Jeweler", "Leatherworker", "Scribe", "Tailor", "Weaponsmith"}`
+
+**Rating filtre:** `ImGui::SliderInt` 0-500, varsayılan 400 (kullanıcının mevcut durumu).
+
+#### Test planı
+
+**test_recipe_db.cpp:**
+1. Save/Load roundtrip (3 recipe)
+2. Filter by discipline (Chef)
+3. Filter by rating range (100-200)
+4. FindByOutput (var + yok)
+5. Empty DB
+
+**test_worker genişletme:**
+- [7c] Recipe DB yokken scan no-op
+- [7d] Recipe DB varken scan: en az 1 ScanResult, kâr hesabı doğru
+
+**Regresyon:** test_crafting (9), test_book (6), test_volume (13), test_orders (10), test_pnl (6).
+
+- [ ] RecipeDatabase (Load/Save/DownloadAll/Filter) + test_recipe_db
+- [ ] Worker: DoRecipeDownload, DoScan, ScanSnapshot, RequestScan
+- [ ] UI: Recipe DB durum + Indir + Filtre + Tara + sonuç tablosu; sürüm 0.7
+- [ ] test_worker [7c, 7d]
+- [ ] Oyun içi: Chef 0-400 tara, kârlı recipe bul, craft et, sat

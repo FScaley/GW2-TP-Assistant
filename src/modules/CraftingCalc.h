@@ -92,8 +92,22 @@ inline const std::vector<int>& Tier2ProductIds() {
 // Only Thermocatalytic Reagent is universally needed; others added via config.
 inline const std::map<int, int>& DefaultVendorPrices() {
     static std::map<int, int> v = {
-        // Thermocatalytic Reagent: also on TP (buy ~150c) but vendor is guaranteed 150c
-        {46747, 150},
+        {46747, 150},  // Thermocatalytic Reagent
+        {19750, 16},   // Lump of Coal
+        {12156, 36},   // Jar of Vinegar
+        {12155, 8},    // Jug of Water
+        {12136, 64},   // Bag of Starch
+        {12138, 32},   // Cheese Wedge
+        {12137, 8},    // Glass Mug
+        {12165, 48},   // Ball of Dough
+        {12158, 8},    // Bag of Sugar
+        {12153, 8},    // Bag of Flour
+        {19790, 48},   // Spool of Thread (all tiers use vendor thread)
+        {19791, 64},   // Spool of Wool Thread
+        {19793, 80},   // Spool of Cotton Thread
+        {19794, 96},   // Spool of Linen Thread
+        {19795, 112},  // Spool of Silk Thread
+        {19789, 128},  // Spool of Gossamer Thread
     };
     return v;
 }

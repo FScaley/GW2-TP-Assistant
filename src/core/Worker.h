@@ -7,6 +7,7 @@
 #include "../modules/OrderTracker.h"
 #include "../modules/VolumeTracker.h"
 #include "../modules/CraftingCalc.h"
+#include "../modules/RecipeDatabase.h"
 #include <vector>
 #include <map>
 #include <cstdint>
@@ -101,6 +102,45 @@ public:
     void RequestCrafting();
     void RequestCraftingSearch(int outputItemId);   // search + resolve + add to custom list
 
+    // Crafting arbitrage scanner: scan recipes by discipline/rating, find profitable ones.
+    struct ScanResult {
+        CostBreakdown cost;
+        int orderQty = 0;               // min(250, positionCapital / totalCost)
+        int profitPerOrder = 0;          // profit * orderQty (patient buy-orders)
+        int profitPerOrderInstant = 0;   // profitInstant * orderQty
+        int outputBuyQty = 0;            // TP demand for output
+        int outputSellQty = 0;           // TP supply for output
+        bool sellRisky = false;          // supply > 3× demand
+    };
+    struct ScanSnapshot {
+        std::vector<ScanResult> results;
+        std::string discipline;
+        int maxRating = 0;
+        int recipesScanned = 0;
+        int filtered = 0;               // after pre-filter (has ingredients + sell price)
+        int profitable = 0;
+        int incomplete = 0;              // skipped due to missing prices
+        int unprofitable = 0;            // complete but profit <= 0
+        int priceFetchFailed = 0;        // API errors during price fetch
+        int emptyIngredients = 0;        // recipes with no ingredients (MF/discovery)
+        int outputPriceRequested = 0;    // unique output items queried
+        int outputPriceGot = 0;          // items returned by API
+        int noSellPrice = 0;             // output not tradeable or no sell price
+        int lowRevenue = 0;              // revenue < 1s
+        std::chrono::steady_clock::time_point timestamp;
+        bool hasData = false;
+        bool scanning = false;
+        float progress = 0.0f;           // 0.0-1.0
+        bool downloadFailed = false;
+        // Recipe DB state (set under mutex to avoid render-thread data race)
+        bool dbLoaded = false;
+        size_t dbSize = 0;
+        std::string dbUpdated;
+    };
+    ScanSnapshot GetScanSnapshot() const;
+    void RequestScan(const std::string& discipline, int maxRating);
+    void RequestRecipeDownload();
+
     std::vector<AlertMsg> DrainAlerts();
 
     void SetAlertCallback(AlertCallback cb) { m_alertCb = cb; }
@@ -115,6 +155,8 @@ private:
     void DoPnL(bool incremental = false);
     void DoOrders();
     void DoCrafting();
+    void DoRecipeDownload();
+    void DoScan();
     void ResolveNames(const std::vector<int>& ids);
 
     GW2ApiClient* m_api = nullptr;
@@ -150,6 +192,13 @@ private:
 
     // Crafting: recipe cache (static data), resolved trees, snapshot
     CraftingSnapshot m_craftingSnapshot;
+    // Crafting arbitrage scanner
+    RecipeDatabase m_recipeDb;
+    ScanSnapshot m_scanSnapshot;
+    std::atomic<bool> m_downloadRequested{false};
+    std::atomic<bool> m_scanRequested{false};
+    std::string m_scanDiscipline;
+    int m_scanMaxRating = 400;
     struct ChainPair { RecipeInfo tier1; RecipeInfo tier2; };
     std::vector<ChainPair> m_dailyChains;             // tier-1→tier-2 pairs
     std::vector<RecipeInfo> m_gatedRecipes;            // all recipes (tier-1 + tier-2)

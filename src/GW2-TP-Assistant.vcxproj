@@ -94,6 +94,11 @@
       <EnableUAC>false</EnableUAC>
       <AdditionalDependencies>winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "$(OutDir)tp-assistant.dll" "E:\GW2\GuildWars2\addons\tp-assistant.dll" &gt;nul 2&gt;&amp;1 &amp;&amp; echo [OK] DLL kopyalandi || echo [UYARI] Kopyalanamadi — oyun icinde CTRL+O ile disable et
+exit /b 0</Command>
+      <Message>Copying DLL to Nexus addons folder...</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="imgui\imconfig.h" />
@@ -111,6 +116,7 @@
     <ClInclude Include="modules\OrderTracker.h" />
     <ClInclude Include="modules\CraftingCalc.h" />
     <ClInclude Include="modules\VolumeTracker.h" />
+    <ClInclude Include="modules\RecipeDatabase.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="entry.cpp" />
@@ -127,6 +133,7 @@
     <ClCompile Include="modules\OrderTracker.cpp" />
     <ClCompile Include="modules\CraftingCalc.cpp" />
     <ClCompile Include="modules\VolumeTracker.cpp" />
+    <ClCompile Include="modules\RecipeDatabase.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

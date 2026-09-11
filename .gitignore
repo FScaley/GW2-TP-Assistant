@@ -35,6 +35,8 @@ volume_history.json
 volume_history.json.tmp
 orders_state.json
 orders_state.json.tmp
+recipes_db.json
+recipes_db.json.tmp
 
 # Dependencies (download locally)
 vendor/

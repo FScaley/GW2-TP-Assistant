@@ -50,7 +50,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 6;
+    AddonDef.Version.Minor = 7;
     AddonDef.Version.Build = 0;
     AddonDef.Version.Revision = 1;
     AddonDef.Author = "Onur";
@@ -1087,6 +1087,240 @@ void AddonRender() {
                         }
                         ImGui::PopID();
                     }
+
+                    // ---- Crafting Arbitrage Scanner
+                    ImGui::Separator();
+                    ImGui::Text("Crafting Firsatlari");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Tum receteleri disiplin/rating'e gore tara,\n"
+                                          "karli craft firsatlarini bul.\n"
+                                          "Ilk kullanimda 'Indir' ile recete veritabanini cek (~12K recete, ~15 sn).");
+
+                    // Recipe DB status — all state read from ScanSnapshot (mutex-safe)
+                    auto scanSnap = g_worker->GetScanSnapshot();
+                    if (scanSnap.dbLoaded) {
+                        ImGui::TextDisabled("%zu recete yuklu (%s)",
+                            scanSnap.dbSize, scanSnap.dbUpdated.c_str());
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Guncelle"))
+                            g_worker->RequestRecipeDownload();
+                    } else {
+                        if (scanSnap.scanning) {
+                            ImGui::TextDisabled("Indiriliyor... %%%.0f", scanSnap.progress * 100.0f);
+                        } else {
+                            if (ImGui::Button("Recete DB Indir"))
+                                g_worker->RequestRecipeDownload();
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("~12.500 recete, ~15 saniye");
+                            if (scanSnap.downloadFailed) {
+                                ImGui::SameLine();
+                                ImGui::TextColored(red, "Indirme basarisiz — tekrar dene");
+                            }
+                        }
+                    }
+
+                    // Scan controls (only if DB loaded)
+                    if (scanSnap.dbLoaded) {
+                        static const char* disciplines[] = {
+                            "Hepsi", "Armorsmith", "Artificer", "Chef", "Huntsman",
+                            "Jeweler", "Leatherworker", "Scribe", "Tailor", "Weaponsmith"
+                        };
+                        static int discIdx = 0;
+                        static int maxRating = 400;
+
+                        static int budgetGold = 100;
+
+                        ImGui::SetNextItemWidth(120);
+                        ImGui::Combo("Disiplin", &discIdx, disciplines, IM_ARRAYSIZE(disciplines));
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth(80);
+                        ImGui::SliderInt("Max Rating", &maxRating, 0, 500);
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth(100);
+                        ImGui::SliderInt("Butce (gold)", &budgetGold, 1, 1000);
+                        ImGui::SameLine();
+
+                        if (scanSnap.scanning) {
+                            ImGui::TextDisabled("Taraniyor... %%%.0f", scanSnap.progress * 100.0f);
+                        } else {
+                            if (ImGui::Button("Tara")) {
+                                std::string disc = (discIdx == 0) ? "" : disciplines[discIdx];
+                                g_worker->RequestScan(disc, maxRating);
+                            }
+                        }
+
+                        // Scan results
+                        if (scanSnap.hasData) {
+                            int secs = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now() - scanSnap.timestamp).count());
+                            ImGui::Text("%d tarandi | %d on-filtre | %d karli | %d karsiz | %d eksik",
+                                scanSnap.recipesScanned, scanSnap.filtered, scanSnap.profitable,
+                                scanSnap.unprofitable, scanSnap.incomplete);
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(%d sn)", secs);
+                            // Detailed diagnostics tooltip
+                            ImGui::TextDisabled("Detay: %d bos-malzeme | fiyat %d/%d | %d satis-yok | %d dusuk-gelir | %d API-hata",
+                                scanSnap.emptyIngredients, scanSnap.outputPriceGot, scanSnap.outputPriceRequested,
+                                scanSnap.noSellPrice, scanSnap.lowRevenue, scanSnap.priceFetchFailed);
+                            if (scanSnap.priceFetchFailed > 0) {
+                                ImGui::TextColored(red, "API rate limit! %d fiyat istegi basarisiz — birkac dakika bekleyip tekrar dene",
+                                    scanSnap.priceFetchFailed);
+                            }
+                            if (scanSnap.outputPriceGot == 0 && scanSnap.outputPriceRequested > 0) {
+                                ImGui::TextColored(red, "Hic fiyat alinamadi — API rate limit olabilir, 2 dk bekle ve tekrar Tara");
+                            }
+
+                            int budgetCopper = budgetGold * 10000;
+                            int shown = 0;
+
+                            // Build filtered + sortable index
+                            static std::vector<int> sortedIdx;
+                            static int lastSortCol = -1;
+                            static bool lastSortAsc = false;
+
+                            if (ImGui::BeginTable("##scan", 9,
+                                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_Sortable,
+                                    ImVec2(0, 300))) {
+                                ImGui::TableSetupColumn("Urun", 0, 2.5f);
+                                ImGui::TableSetupColumn("Disiplin", 0, 1.3f);
+                                ImGui::TableSetupColumn("Rating", 0, 0.5f);
+                                ImGui::TableSetupColumn("Maliyet", 0, 1.2f);
+                                ImGui::TableSetupColumn("Satis", 0, 1.2f);
+                                ImGui::TableSetupColumn("Kar", 0, 1.0f);
+                                ImGui::TableSetupColumn("ROI", 0, 0.6f);
+                                ImGui::TableSetupColumn("Kar/Emir", 0, 1.2f);
+                                ImGui::TableSetupColumn("Durum", 0, 1.0f);
+                                ImGui::TableSetupScrollFreeze(0, 1);
+                                ImGui::TableHeadersRow();
+
+                                // Sort handling
+                                if (auto* specs = ImGui::TableGetSortSpecs()) {
+                                    if (specs->SpecsDirty || sortedIdx.size() != scanSnap.results.size()) {
+                                        sortedIdx.resize(scanSnap.results.size());
+                                        for (int i = 0; i < (int)sortedIdx.size(); i++) sortedIdx[i] = i;
+                                        if (specs->SpecsCount > 0) {
+                                            int col = specs->Specs[0].ColumnIndex;
+                                            bool asc = (specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
+                                            auto& res = scanSnap.results;
+                                            std::stable_sort(sortedIdx.begin(), sortedIdx.end(),
+                                                [&](int a, int b) {
+                                                    int va = 0, vb = 0;
+                                                    switch (col) {
+                                                        case 0: return asc ? res[a].cost.outputName < res[b].cost.outputName
+                                                                           : res[a].cost.outputName > res[b].cost.outputName;
+                                                        case 2: va = res[a].cost.minRating; vb = res[b].cost.minRating; break;
+                                                        case 3: va = res[a].cost.totalCost; vb = res[b].cost.totalCost; break;
+                                                        case 4: va = res[a].cost.sellRevenue; vb = res[b].cost.sellRevenue; break;
+                                                        case 5: va = res[a].cost.profit; vb = res[b].cost.profit; break;
+                                                        case 6: va = (int)res[a].cost.roi; vb = (int)res[b].cost.roi; break;
+                                                        case 7: va = res[a].profitPerOrder; vb = res[b].profitPerOrder; break;
+                                                        default: return false;
+                                                    }
+                                                    return asc ? va < vb : va > vb;
+                                                });
+                                        }
+                                        specs->SpecsDirty = false;
+                                    }
+                                }
+
+                                for (int idx : sortedIdx) {
+                                    auto& sr = scanSnap.results[idx];
+                                    // Budget filter
+                                    if (sr.cost.totalCost > budgetCopper) continue;
+                                    if (shown >= 50) break;
+                                    shown++;
+
+                                    ImGui::TableNextRow();
+                                    ImGui::PushID(sr.cost.recipeId);
+
+                                    // Product name
+                                    ImGui::TableNextColumn();
+                                    ImVec4 nameCol = sr.cost.profitInstant > 0 ? green :
+                                                     sr.cost.profit > 0 ? yellow : red;
+                                    CopyableName(sr.cost.outputName, nameCol);
+
+                                    // Discipline
+                                    ImGui::TableNextColumn();
+                                    if (!sr.cost.disciplines.empty())
+                                        ImGui::TextDisabled("%s", sr.cost.disciplines[0].c_str());
+
+                                    // Rating
+                                    ImGui::TableNextColumn();
+                                    ImGui::Text("%d", sr.cost.minRating);
+
+                                    // Cost
+                                    ImGui::TableNextColumn();
+                                    ImGui::Text("%s", ProfitEngine::FormatCopper(sr.cost.totalCost).c_str());
+                                    if (ImGui::IsItemHovered()) {
+                                        ImGui::BeginTooltip();
+                                        ImGui::Text("Malzeme maliyeti:");
+                                        for (auto& l : sr.cost.lines) {
+                                            ImGui::Text("  %dx %s = %s%s",
+                                                l.count, l.name.c_str(),
+                                                ProfitEngine::FormatCopper(l.totalCost).c_str(),
+                                                l.vendor ? " (vendor)" : "");
+                                        }
+                                        ImGui::Separator();
+                                        ImGui::Text("Sabirli: %s | Anlik: %s",
+                                            ProfitEngine::FormatCopper(sr.cost.totalCost).c_str(),
+                                            ProfitEngine::FormatCopper(sr.cost.totalCostInstant).c_str());
+                                        ImGui::EndTooltip();
+                                    }
+
+                                    // Sell revenue
+                                    ImGui::TableNextColumn();
+                                    ImGui::Text("%s", ProfitEngine::FormatCopper(sr.cost.sellRevenue).c_str());
+
+                                    // Profit
+                                    ImGui::TableNextColumn();
+                                    ImGui::TextColored(sr.cost.profit > 0 ? green : red,
+                                        "%s", ProfitEngine::FormatCopper(sr.cost.profit).c_str());
+                                    if (ImGui::IsItemHovered()) {
+                                        ImGui::SetTooltip("Sabirli: %s | Anlik: %s",
+                                            ProfitEngine::FormatCopper(sr.cost.profit).c_str(),
+                                            ProfitEngine::FormatCopper(sr.cost.profitInstant).c_str());
+                                    }
+
+                                    // ROI
+                                    ImGui::TableNextColumn();
+                                    ImGui::TextColored(sr.cost.roi > 20 ? green : sr.cost.roi > 0 ? yellow : red,
+                                        "%.0f%%", sr.cost.roi);
+
+                                    // Profit per order
+                                    ImGui::TableNextColumn();
+                                    ImGui::TextColored(sr.profitPerOrder > 0 ? green : red,
+                                        "%s", ProfitEngine::FormatCopper(sr.profitPerOrder).c_str());
+                                    if (ImGui::IsItemHovered()) {
+                                        ImGui::SetTooltip("Emir boyutu: %d adet\nKar/emir (anlik): %s\nTalep: %d | Arz: %d",
+                                            sr.orderQty,
+                                            ProfitEngine::FormatCopper(sr.profitPerOrderInstant).c_str(),
+                                            sr.outputBuyQty, sr.outputSellQty);
+                                    }
+
+                                    // Status
+                                    ImGui::TableNextColumn();
+                                    if (sr.sellRisky) {
+                                        ImGui::TextColored(red, "SATIS RISKLI");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Arz (%d) > 3x Talep (%d)\n"
+                                                              "Satis tarafinda kuyruk uzun — emir dolmayabilir.\n"
+                                                              "Bu arz/talep proxy — gercek Devir icin Watchlist'e ekle.",
+                                                              sr.outputSellQty, sr.outputBuyQty);
+                                    } else {
+                                        ImGui::TextColored(green, "OK");
+                                    }
+
+                                    ImGui::PopID();
+                                }
+                                ImGui::EndTable();
+                            }
+                            if (shown == 0 && !scanSnap.results.empty()) {
+                                ImGui::TextDisabled("  Butce (%dg) ile karli recete yok — slider'i artir", budgetGold);
+                            }
+                        }
+                    }
                 }
                 ImGui::EndTabItem();
             }
@@ -1099,7 +1333,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.6");
+    ImGui::Text("TP Assistant v0.7");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

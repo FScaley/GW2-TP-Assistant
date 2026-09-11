@@ -30,6 +30,14 @@ void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& 
     m_craftingRequested = false;
     m_craftingSearchId = 0;
 
+    m_recipeDb.Load(m_dataDir + "\\recipes_db.json");
+    m_scanSnapshot = ScanSnapshot{};
+    m_scanSnapshot.dbLoaded = m_recipeDb.IsLoaded();
+    m_scanSnapshot.dbSize = m_recipeDb.Size();
+    m_scanSnapshot.dbUpdated = m_recipeDb.UpdatedAt();
+    m_downloadRequested = false;
+    m_scanRequested = false;
+
     m_thread = std::thread(&Worker::Run, this);
 }
 
@@ -64,6 +72,25 @@ void Worker::RequestCrafting() {
     { std::lock_guard<std::mutex> lk(m_cvMutex); m_craftingRequested = true; }
     m_cv.notify_one();
 }
+
+Worker::ScanSnapshot Worker::GetScanSnapshot() const {
+    std::lock_guard<std::mutex> lock(m_snapshotMutex);
+    return m_scanSnapshot;
+}
+
+void Worker::RequestScan(const std::string& discipline, int maxRating) {
+    std::lock_guard<std::mutex> lk(m_cvMutex);
+    m_scanDiscipline = discipline;
+    m_scanMaxRating = maxRating;
+    m_scanRequested = true;
+    m_cv.notify_one();
+}
+
+void Worker::RequestRecipeDownload() {
+    { std::lock_guard<std::mutex> lk(m_cvMutex); m_downloadRequested = true; }
+    m_cv.notify_one();
+}
+
 
 void Worker::RequestCraftingSearch(int outputItemId) {
     { std::lock_guard<std::mutex> lk(m_cvMutex); m_craftingSearchId = outputItemId; m_craftingRequested = true; }
@@ -108,7 +135,8 @@ void Worker::Run() {
         m_cv.wait_for(lock, std::chrono::seconds(intervalSec),
             [this] { return m_stop.load() || m_forcePoll.load()
                      || m_pnlRequested.load() || m_ordersRequested.load()
-                     || m_craftingRequested.load(); });
+                     || m_craftingRequested.load() || m_downloadRequested.load()
+                     || m_scanRequested.load(); });
 
         if (m_stop) break;
 
@@ -116,9 +144,11 @@ void Worker::Run() {
         bool doPnl = m_pnlRequested.exchange(false);
         bool doOrders = m_ordersRequested.exchange(false);
         bool doCrafting = m_craftingRequested.exchange(false);
+        bool doDownload = m_downloadRequested.exchange(false);
+        bool doScan = m_scanRequested.exchange(false);
 
         // Regular poll interval always refreshes prices (and, with it, my orders)
-        if (!doPrice && !doPnl && !doOrders)
+        if (!doPrice && !doPnl && !doOrders && !doCrafting && !doDownload && !doScan)
             doPrice = true;
 
         lock.unlock();
@@ -127,6 +157,8 @@ void Worker::Run() {
         if (doPnl) DoPnL();
         if ((doPrice || doOrders) && !m_stop) DoOrders();
         if (doCrafting && !m_stop) DoCrafting();
+        if (doDownload && !m_stop) DoRecipeDownload();
+        if (doScan && !m_stop) DoScan();
     }
 }
 
@@ -619,5 +651,247 @@ void Worker::DoCrafting() {
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
         m_craftingSnapshot = std::move(cs);
+    }
+}
+
+void Worker::DoRecipeDownload() {
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_scanSnapshot.scanning = true;
+        m_scanSnapshot.progress = 0.0f;
+        m_scanSnapshot.downloadFailed = false;
+    }
+
+    bool ok = m_recipeDb.DownloadAll(m_api, m_stop, [this](int done, int total) {
+        if (total > 0) {
+            std::lock_guard<std::mutex> lock(m_snapshotMutex);
+            m_scanSnapshot.progress = static_cast<float>(done) / total;
+        }
+    });
+
+    if (ok) {
+        m_recipeDb.Save(m_dataDir + "\\recipes_db.json");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_scanSnapshot.scanning = false;
+        m_scanSnapshot.downloadFailed = !ok && !m_stop;
+        m_scanSnapshot.dbLoaded = m_recipeDb.IsLoaded();
+        m_scanSnapshot.dbSize = m_recipeDb.Size();
+        m_scanSnapshot.dbUpdated = m_recipeDb.UpdatedAt();
+    }
+}
+
+void Worker::DoScan() {
+    if (!m_recipeDb.IsLoaded()) return;
+
+    // Copy params under mutex to avoid race with UI thread setting them
+    std::string discipline;
+    int maxRating;
+    {
+        std::lock_guard<std::mutex> lock(m_cvMutex);
+        discipline = m_scanDiscipline;
+        maxRating = m_scanMaxRating;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_scanSnapshot.scanning = true;
+        m_scanSnapshot.progress = 0.0f;
+    }
+
+    int positionCapital = m_config->GetPositionCapital();
+    auto candidates = m_recipeDb.Filter(discipline, maxRating, 0);
+    int totalCandidates = static_cast<int>(candidates.size());
+
+    // Step 1: Collect all output item IDs and fetch prices
+    std::set<int> outputIds;
+    int emptyIngCount = 0;
+    for (auto* e : candidates) {
+        if (e->ingredients.empty()) { emptyIngCount++; continue; }
+        outputIds.insert(e->outputItemId);
+    }
+
+    int priceFetchFailed = 0;
+    int outputPriceRequested = static_cast<int>(outputIds.size());
+    std::map<int, PriceData> outputPrices;
+    {
+        std::vector<int> ids(outputIds.begin(), outputIds.end());
+        for (size_t i = 0; i < ids.size(); i += 200) {
+            if (m_stop) return;
+            auto batch = std::vector<int>(ids.begin() + i,
+                ids.begin() + (std::min)(i + 200, ids.size()));
+            auto prices = m_api->GetPrices(batch);
+            if (!m_api->IsLastRequestOk()) priceFetchFailed++;
+            for (auto& p : prices) outputPrices[p.itemId] = p;
+        }
+    }
+    int outputPriceGot = static_cast<int>(outputPrices.size());
+
+    // Step 2: Pre-filter — skip untradeable, negligible, or empty recipes
+    std::vector<const RecipeDbEntry*> filtered;
+    int noSellPrice = 0, lowRevenue = 0;
+    for (auto* e : candidates) {
+        if (e->ingredients.empty()) continue;
+        auto it = outputPrices.find(e->outputItemId);
+        if (it == outputPrices.end() || it->second.sellPrice == 0) { noSellPrice++; continue; }
+        int revenue = ProfitEngine::NetRevenue(it->second.sellPrice) * e->outputCount;
+        if (revenue < 100) { lowRevenue++; continue; }
+        filtered.push_back(e);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_scanSnapshot.progress = 0.3f;
+    }
+
+    // Step 3: Collect all ingredient IDs from filtered candidates
+    std::set<int> ingIds;
+    for (auto* e : filtered) {
+        for (auto& p : e->ingredients) ingIds.insert(p.first);
+    }
+
+    // Step 4: Fetch ingredient prices (with API error tracking)
+    std::map<int, PriceData> allPrices = outputPrices;
+    {
+        std::vector<int> ids;
+        for (int id : ingIds)
+            if (allPrices.find(id) == allPrices.end()) ids.push_back(id);
+
+        for (size_t i = 0; i < ids.size(); i += 200) {
+            if (m_stop) return;
+            auto batch = std::vector<int>(ids.begin() + i,
+                ids.begin() + (std::min)(i + 200, ids.size()));
+            auto prices = m_api->GetPrices(batch);
+            if (!m_api->IsLastRequestOk()) priceFetchFailed++;
+            for (auto& p : prices) allPrices[p.itemId] = p;
+        }
+    }
+
+    // For scanner: fallback buyPrice to sellPrice when no buy orders exist.
+    // Many intermediate crafting materials have 0 buy orders but active sell listings.
+    // Using sellPrice = "instant buy" cost = worst-case ingredient cost.
+    std::map<int, PriceData> scanPrices;
+    for (auto& kv : allPrices) {
+        PriceData p = kv.second;
+        if (p.buyPrice <= 0 && p.sellPrice > 0)
+            p.buyPrice = p.sellPrice;
+        scanPrices[kv.first] = p;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_scanSnapshot.progress = 0.6f;
+    }
+
+    // Step 5: Calculate costs — flat pricing (no sub-recipe expansion)
+    auto vendor = CraftingCalc::DefaultVendorPrices();
+    std::map<int, RecipeInfo> emptySubRecipes;
+    std::vector<ScanResult> results;
+    int incompleteCount = 0;
+    int unprofitableCount = 0;
+
+    for (auto* e : filtered) {
+        if (m_stop) return;
+
+        RecipeInfo ri;
+        ri.recipeId = e->recipeId;
+        ri.outputItemId = e->outputItemId;
+        ri.outputCount = e->outputCount;
+        ri.minRating = e->minRating;
+        ri.disciplines = e->disciplines;
+        for (auto& p : e->ingredients)
+            ri.ingredients.push_back({p.first, p.second});
+
+        auto bd = CraftingCalc::CalcRecipeCost(ri, scanPrices, emptySubRecipes, vendor,
+                                                m_nameCache, m_gatedItemIds);
+
+        if (bd.lines.empty()) continue;
+        if (!bd.complete) { incompleteCount++; continue; }
+
+        ScanResult sr;
+        sr.cost = std::move(bd);
+
+        // Emir ekonomisi
+        if (sr.cost.totalCost > 0) {
+            sr.orderQty = (std::min)(250, positionCapital / sr.cost.totalCost);
+            if (sr.orderQty < 1) sr.orderQty = 1;
+        } else {
+            sr.orderQty = 250;
+        }
+        sr.profitPerOrder = sr.cost.profit * sr.orderQty;
+        sr.profitPerOrderInstant = sr.cost.profitInstant * sr.orderQty;
+
+        // Output liquidity
+        auto outIt = outputPrices.find(sr.cost.outputItemId);
+        if (outIt != outputPrices.end()) {
+            sr.outputBuyQty = outIt->second.buyQty;
+            sr.outputSellQty = outIt->second.sellQty;
+            sr.sellRisky = sr.outputSellQty > 3 * sr.outputBuyQty && sr.outputBuyQty < 1000;
+        }
+
+        if (sr.cost.profit <= 0) unprofitableCount++;
+        results.push_back(std::move(sr));
+    }
+
+    // Sort by profit descending — profitable first, then least-negative
+    std::stable_sort(results.begin(), results.end(),
+        [](const ScanResult& a, const ScanResult& b) {
+            return a.profitPerOrder > b.profitPerOrder;
+        });
+
+    int profitableCount = 0;
+    for (auto& r : results)
+        if (r.cost.profit > 0) profitableCount++;
+
+    // Keep top 50 (profitable + nearest unprofitable for diagnostics)
+    if (results.size() > 50) results.resize(50);
+
+    // Resolve names only for results shown (not all 5000 candidates)
+    {
+        std::vector<int> nameIds;
+        for (auto& sr : results) {
+            nameIds.push_back(sr.cost.outputItemId);
+            for (auto& l : sr.cost.lines) nameIds.push_back(l.itemId);
+        }
+        ResolveNames(nameIds);
+        // Re-apply names to cost lines
+        for (auto& sr : results) {
+            auto nit = m_nameCache.find(sr.cost.outputItemId);
+            if (nit != m_nameCache.end()) sr.cost.outputName = nit->second;
+            for (auto& l : sr.cost.lines) {
+                auto lit = m_nameCache.find(l.itemId);
+                if (lit != m_nameCache.end()) l.name = lit->second;
+            }
+        }
+    }
+
+    ScanSnapshot ss;
+    ss.results = std::move(results);
+    ss.discipline = discipline;
+    ss.maxRating = maxRating;
+    ss.recipesScanned = totalCandidates;
+    ss.filtered = static_cast<int>(filtered.size());
+    ss.profitable = profitableCount;
+    ss.incomplete = incompleteCount;
+    ss.unprofitable = unprofitableCount;
+    ss.priceFetchFailed = priceFetchFailed;
+    ss.emptyIngredients = emptyIngCount;
+    ss.outputPriceRequested = outputPriceRequested;
+    ss.outputPriceGot = outputPriceGot;
+    ss.noSellPrice = noSellPrice;
+    ss.lowRevenue = lowRevenue;
+    ss.timestamp = std::chrono::steady_clock::now();
+    ss.hasData = true;
+    ss.scanning = false;
+    ss.progress = 1.0f;
+    ss.dbLoaded = m_recipeDb.IsLoaded();
+    ss.dbSize = m_recipeDb.Size();
+    ss.dbUpdated = m_recipeDb.UpdatedAt();
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_scanSnapshot = std::move(ss);
     }
 }

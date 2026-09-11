@@ -55,6 +55,7 @@ public:
     std::vector<ItemInfo> GetItems(const std::vector<int>& itemIds);
 
     // Recipe endpoints (no auth)
+    std::vector<int> GetAllRecipeIds();                               // all recipe IDs (~12K)
     std::vector<int> SearchRecipeByOutput(int outputItemId);          // returns recipe IDs
     std::vector<int> SearchRecipeByInput(int inputItemId);           // recipes consuming this item
     std::vector<RecipeData> GetRecipes(const std::vector<int>& recipeIds);  // up to 200

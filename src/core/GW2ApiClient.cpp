@@ -113,6 +113,18 @@ std::vector<ItemInfo> GW2ApiClient::GetItems(const std::vector<int>& itemIds) {
     return result;
 }
 
+std::vector<int> GW2ApiClient::GetAllRecipeIds() {
+    std::vector<int> result;
+    auto resp = m_http.Get(API_HOST, "/v2/recipes");
+    if (!resp || resp->statusCode != 200) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& v : j) result.push_back(v.get<int>());
+    } catch (...) { m_lastOk = false; }
+    return result;
+}
+
 std::vector<int> GW2ApiClient::SearchRecipeByOutput(int outputItemId) {
     std::vector<int> result;
     std::string path = "/v2/recipes/search?output=" + std::to_string(outputItemId);
@@ -157,7 +169,7 @@ std::vector<RecipeData> GW2ApiClient::GetRecipes(const std::vector<int>& recipeI
             for (auto& d : r.value("disciplines", json::array())) rd.disciplines.push_back(d.get<std::string>());
             for (auto& f : r.value("flags", json::array())) rd.flags.push_back(f.get<std::string>());
             for (auto& ing : r.value("ingredients", json::array())) {
-                int iid = ing.value("id", 0);
+                int iid = ing.value("item_id", 0);
                 int cnt = ing.value("count", 0);
                 if (iid > 0 && cnt > 0) rd.ingredients.push_back({iid, cnt});
             }
