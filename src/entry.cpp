@@ -58,6 +58,8 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Load = AddonLoad;
     AddonDef.Unload = AddonUnload;
     AddonDef.Flags = AF_None;
+    AddonDef.Provider = UP_GitHub;
+    AddonDef.UpdateLink = "https://github.com/FScaley/GW2-TP-Assistant";
     return &AddonDef;
 }
 
