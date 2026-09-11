@@ -1059,15 +1059,14 @@ void Worker::DoInventory() {
         m_inventorySnapshot.scanning = true;
     }
 
-    // Use MumbleLink character name if provided, otherwise fall back to API first character
     std::string charName = m_inventoryCharName;
     if (charName.empty()) {
         auto charNames = m_api->GetCharacterNames();
         if (!m_api->IsLastRequestOk() || charNames.empty()) {
             std::lock_guard<std::mutex> lock(m_snapshotMutex);
-            if (m_inventorySnapshot.hasData)
-                m_inventorySnapshot.stale = true;
             m_inventorySnapshot.scanning = false;
+            m_inventorySnapshot.error = "Karakter listesi alinamadi — API key'de 'characters' scope var mi?";
+            if (m_inventorySnapshot.hasData) m_inventorySnapshot.stale = true;
             return;
         }
         charName = charNames[0];
@@ -1077,9 +1076,9 @@ void Worker::DoInventory() {
     auto slots = m_api->GetCharacterInventory(charName);
     if (!m_api->IsLastRequestOk()) {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
-        if (m_inventorySnapshot.hasData)
-            m_inventorySnapshot.stale = true;
         m_inventorySnapshot.scanning = false;
+        m_inventorySnapshot.error = "Envanter alinamadi (" + charName + ") — 'inventories' scope var mi?";
+        if (m_inventorySnapshot.hasData) m_inventorySnapshot.stale = true;
         return;
     }
     if (m_stop) return;
@@ -1163,6 +1162,7 @@ void Worker::DoInventory() {
     snap.hasData = true;
     snap.stale = anyFailed;
     snap.scanning = false;
+    snap.error.clear();
     snap.totalVendor = totalVendor;
     snap.totalBest = totalBest;
 

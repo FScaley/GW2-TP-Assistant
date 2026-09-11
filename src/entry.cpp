@@ -53,7 +53,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 1;
+    AddonDef.Version.Build = 2;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -116,7 +116,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.1 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.2 loaded.");
 }
 
 void AddonUnload() {
@@ -1561,18 +1561,19 @@ void AddonRender() {
                     ImGui::TextDisabled("Taraniyor...");
                 } else {
                     if (ImGui::Button("Tara##inv")) {
-                        // Try to get active character name from MumbleLink identity
                         std::string activeChar;
                         if (MumbleLink && MumbleLink->Identity[0] != 0) {
                             try {
-                                std::wstring wident(MumbleLink->Identity);
-                                std::string ident;
-                                ident.reserve(wident.size());
-                                for (wchar_t wc : wident)
-                                    ident.push_back(static_cast<char>(wc & 0x7F));
-                                auto ij = nlohmann::json::parse(ident);
-                                if (ij.contains("name"))
-                                    activeChar = ij["name"].get<std::string>();
+                                int len = WideCharToMultiByte(CP_UTF8, 0,
+                                    MumbleLink->Identity, -1, nullptr, 0, nullptr, nullptr);
+                                if (len > 0) {
+                                    std::string ident(len - 1, '\0');
+                                    WideCharToMultiByte(CP_UTF8, 0,
+                                        MumbleLink->Identity, -1, &ident[0], len, nullptr, nullptr);
+                                    auto ij = nlohmann::json::parse(ident);
+                                    if (ij.contains("name"))
+                                        activeChar = ij["name"].get<std::string>();
+                                }
                             } catch (...) {}
                         }
                         g_worker->RequestInventory(activeChar);
@@ -1582,6 +1583,9 @@ void AddonRender() {
                 if (invSnap.stale) {
                     ImGui::SameLine();
                     ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "(eski veri)");
+                }
+                if (!invSnap.error.empty()) {
+                    ImGui::TextColored(ImVec4(1, 0.2f, 0.2f, 1), "%s", invSnap.error.c_str());
                 }
 
                 if (invSnap.hasData && !invSnap.items.empty()) {
@@ -1613,12 +1617,14 @@ void AddonRender() {
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
-                        for (auto& item : invSnap.items) {
+                        for (int invIdx = 0; invIdx < static_cast<int>(invSnap.items.size()); invIdx++) {
+                            auto& item = invSnap.items[invIdx];
                             // Filter
                             if (invFilter == 1 && item.verdict != SalvageVerdict::SALVAGE) continue;
                             if (invFilter == 2 && item.verdict != SalvageVerdict::TP_SELL) continue;
                             if (invFilter == 3 && item.verdict != SalvageVerdict::VENDOR) continue;
 
+                            ImGui::PushID(invIdx);
                             ImGui::TableNextRow();
 
                             // Item name (click to copy)
@@ -1681,6 +1687,7 @@ void AddonRender() {
                             else if (item.verdict == SalvageVerdict::VENDOR)
                                 vCol = ImVec4(0.6f, 0.6f, 0.6f, 1);
                             ImGui::TextColored(vCol, "%s", item.verdictText.c_str());
+                            ImGui::PopID();
                         }
 
                         ImGui::EndTable();
@@ -1701,7 +1708,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.9.1");
+    ImGui::Text("TP Assistant v0.9.2");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

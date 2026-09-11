@@ -150,7 +150,7 @@ static void TestRareUnidGear() {
     std::cout << "    vendor=" << r.vendorValue << " tpDump=" << r.tpDumpNet
               << " salvageEv=" << r.salvageEv << " verdict=" << r.verdictText << "\n";
 
-    // salvageEv = 1.39 * ectoNetDump >> tpDumpNet
+    // salvageEv = 1.3932 * ectoNetDump >> tpDumpNet
     assert(r.salvageEv == static_cast<int>(SalvageCalc::RARE_UNID_ECTO_YIELD * ectoNetDump));
     assert(r.salvageEv > r.tpDumpNet);
     assert(r.verdict == SalvageVerdict::SALVAGE);

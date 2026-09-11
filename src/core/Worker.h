@@ -172,8 +172,9 @@ public:
         bool hasData = false;
         bool stale = false;
         bool scanning = false;
-        int totalVendor = 0;    // total value if all vendored
-        int totalBest = 0;      // total value with optimal decisions
+        int totalVendor = 0;
+        int totalBest = 0;
+        std::string error;      // non-empty on failure (shown in UI)
     };
     InventorySnapshot GetInventorySnapshot() const;
     void RequestInventory(const std::string& characterName = "");

@@ -19,35 +19,26 @@ SalvageResult Evaluate(
     r.binding = binding;
     r.vendorValue = info.vendorValue;
 
-    bool isBound = !binding.empty();
-    bool isEquipment = (info.type == "Weapon" || info.type == "Armor" || info.type == "Trinket" || info.type == "Back");
-    bool canSalvage = isEquipment || info.type == "Gizmo" || info.type == "Trophy";
+    bool isBound = !binding.empty() || info.accountBound || info.soulBound;
+    bool isEquipment = (info.type == "Weapon" || info.type == "Armor" || info.type == "Back");
 
-    // TP value: dump into buy orders (guaranteed sale, project convention)
     if (!isBound && itemPrice.buyPrice > 0)
         r.tpDumpNet = ProfitEngine::NetRevenue(itemPrice.buyPrice);
 
-    // Unidentified Gear containers: identify then salvage (Silver-Fed).
-    // These are type "Container" but their real value is identify → salvage → ecto.
-    if (ectoNetDump > 0) {
-        if (info.id == RARE_UNID_GEAR_ID) {
-            r.salvageEv = static_cast<int>(RARE_UNID_ECTO_YIELD * ectoNetDump);
-        } else if (info.id == GREEN_UNID_GEAR_ID) {
-            r.salvageEv = static_cast<int>(GREEN_UNID_ECTO_YIELD * ectoNetDump);
-        }
+    // Rare Unidentified Gear: identify then salvage (Silver-Fed).
+    // Wiki 52,207 samples: 1.3932 ecto per container.
+    if (info.id == RARE_UNID_GEAR_ID && ectoNetDump > 0) {
+        r.salvageEv = static_cast<int>(RARE_UNID_ECTO_YIELD * ectoNetDump);
     }
 
-    // Equipment salvage EV: level 68+ Rare/Exotic
-    if (r.salvageEv == 0 && canSalvage && info.level >= 68 && ectoNetDump > 0) {
+    // Equipment salvage EV: level 68+ Rare/Exotic only
+    if (r.salvageEv == 0 && isEquipment && info.level >= 68 && ectoNetDump > 0) {
         if (info.rarity == "Rare") {
             r.salvageEv = static_cast<int>(RARE_ECTO_YIELD * ectoNetDump);
         } else if (info.rarity == "Exotic") {
             r.salvageEv = static_cast<int>(EXOTIC_ECTO_YIELD * ectoNetDump);
         }
     }
-
-    // Fine/Masterwork equipment: tier mat yields not modeled in v1.
-    // TODO v2: add tier mat yield table per level bracket.
 
     // Junk items: always vendor
     if (info.rarity == "Junk") {
@@ -67,7 +58,7 @@ SalvageResult Evaluate(
     if (isBound) {
         if (r.salvageEv > r.vendorValue && r.salvageEv > 0) {
             r.verdict = SalvageVerdict::SALVAGE;
-            r.verdictText = "SALVAGE";
+            r.verdictText = (info.id == RARE_UNID_GEAR_ID) ? "AC+SALVAGE" : "SALVAGE";
         } else {
             r.verdict = SalvageVerdict::VENDOR;
             r.verdictText = "VENDOR";
@@ -89,11 +80,9 @@ SalvageResult Evaluate(
     if (r.salvageEv > best) {
         best = r.salvageEv;
         r.verdict = SalvageVerdict::SALVAGE;
-        bool isUnid = (info.id == RARE_UNID_GEAR_ID || info.id == GREEN_UNID_GEAR_ID);
-        r.verdictText = isUnid ? "AC+SALVAGE" : "SALVAGE";
+        r.verdictText = (info.id == RARE_UNID_GEAR_ID) ? "AC+SALVAGE" : "SALVAGE";
     }
 
-    // No data at all
     if (best <= 0) {
         r.verdict = SalvageVerdict::UNKNOWN;
         r.verdictText = "?";

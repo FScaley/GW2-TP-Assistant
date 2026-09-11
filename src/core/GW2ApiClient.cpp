@@ -139,15 +139,27 @@ std::vector<std::string> GW2ApiClient::GetCharacterNames() {
     return result;
 }
 
+static std::string PercentEncode(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 3);
+    for (unsigned char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", c);
+            out += hex;
+        }
+    }
+    return out;
+}
+
 std::vector<GW2ApiClient::InventorySlot> GW2ApiClient::GetCharacterInventory(const std::string& characterName) {
     std::vector<InventorySlot> result;
     if (m_apiKey.empty()) { m_lastOk = false; return result; }
 
-    std::string encoded;
-    for (char c : characterName) {
-        if (c == ' ') encoded += "%20";
-        else encoded += c;
-    }
+    std::string encoded = PercentEncode(characterName);
 
     auto resp = m_http.Get(API_HOST,
         "/v2/characters/" + encoded + "/inventory?access_token=" + m_apiKey);

@@ -52,15 +52,14 @@ constexpr int ECTO_ID = 19721;
 constexpr double RARE_ECTO_YIELD = 0.9;         // wiki: 0.88-0.90 per level 68+ rare
 constexpr double EXOTIC_ECTO_YIELD = 1.25;      // wiki Talk:Glob_of_Ectoplasm, 500+ sample
 
-// Unidentified Gear containers — identify then salvage yields.
-// Wiki "Piece of Rare Unidentified Gear/Salvage Rate" — 52,207 samples.
+// Unidentified Gear containers — identify then salvage (Silver-Fed) yields.
+// Wiki "Piece of Rare Unidentified Gear/Salvage Rate" — 52,207 samples, Sep 2026.
 constexpr int RARE_UNID_GEAR_ID = 83008;
-constexpr int GREEN_UNID_GEAR_ID = 84731;       // Piece of Unidentified Gear (Masterwork)
-constexpr double RARE_UNID_ECTO_YIELD = 1.39;   // identify + salvage (Silver-Fed)
-constexpr double GREEN_UNID_ECTO_YIELD = 0.18;  // ~18% chance of rare inside, then 0.9 ecto
+constexpr double RARE_UNID_ECTO_YIELD = 1.3932; // identify + Silver-Fed salvage, wiki 52K sample
 
+// Green Unid Gear (84731) yield not modeled — no wiki research page with sample data.
 // Not modeled in v1: rune/sigil recovery, dark matter (exotic-only ~0.5/exotic),
-// fine/masterwork tier mat yields, Black Lion kit higher rates.
+// fine/masterwork tier mat yields, Black Lion kit higher rates, gizmo salvage.
 
 // Evaluate a single inventory item.
 // matPrices: mapping of material item IDs to their TP buy prices (for valuing salvage output).
