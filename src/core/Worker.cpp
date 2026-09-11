@@ -1111,10 +1111,14 @@ void Worker::DoInventory() {
     }
     if (m_stop) return;
 
-    // Fetch TP prices for all items + ecto
+    // Fetch TP prices for all items + ecto + tier mats
     std::vector<int> priceIds(uniqueIds.begin(), uniqueIds.end());
-    if (std::find(priceIds.begin(), priceIds.end(), SalvageCalc::ECTO_ID) == priceIds.end())
-        priceIds.push_back(SalvageCalc::ECTO_ID);
+    for (int mid : {SalvageCalc::ECTO_ID, SalvageCalc::MAT_MITHRIL_ORE,
+                    SalvageCalc::MAT_ELDER_WOOD, SalvageCalc::MAT_SILK_SCRAP,
+                    SalvageCalc::MAT_THICK_LEATHER}) {
+        if (std::find(priceIds.begin(), priceIds.end(), mid) == priceIds.end())
+            priceIds.push_back(mid);
+    }
 
     std::vector<PriceData> allPrices;
     for (size_t i = 0; i < priceIds.size() && !m_stop; i += 200) {
@@ -1126,17 +1130,18 @@ void Worker::DoInventory() {
     }
     if (m_stop) return;
 
-    // Find ecto price
+    // Build mat price map + find ecto price
     int ectoNetDump = 0;
+    std::map<int, int> matNetPrices;
     for (auto& pd : allPrices) {
-        if (pd.itemId == SalvageCalc::ECTO_ID && pd.buyPrice > 0) {
-            ectoNetDump = ProfitEngine::NetRevenue(pd.buyPrice);
-            break;
+        if (pd.buyPrice > 0) {
+            if (pd.itemId == SalvageCalc::ECTO_ID)
+                ectoNetDump = ProfitEngine::NetRevenue(pd.buyPrice);
+            matNetPrices[pd.itemId] = ProfitEngine::NetRevenue(pd.buyPrice);
         }
     }
 
-    // Evaluate all items
-    auto results = SalvageCalc::EvaluateInventory(slots, allInfos, allPrices, ectoNetDump);
+    auto results = SalvageCalc::EvaluateInventory(slots, allInfos, allPrices, ectoNetDump, matNetPrices);
 
     // Resolve names from nameCache where missing
     for (auto& r : results) {

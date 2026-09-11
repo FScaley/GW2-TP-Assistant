@@ -1,13 +1,23 @@
 #include "SalvageCalc.h"
 #include <algorithm>
-#include <map>
 
 namespace SalvageCalc {
+
+int CalcMatSalvageEv(const std::vector<MatYield>& yields, const std::map<int, int>& matNetPrices) {
+    double ev = 0;
+    for (auto& y : yields) {
+        auto it = matNetPrices.find(y.matId);
+        if (it != matNetPrices.end())
+            ev += y.rate * it->second;
+    }
+    return static_cast<int>(ev);
+}
 
 SalvageResult Evaluate(
     const ItemInfo& info,
     const PriceData& itemPrice,
     int ectoNetDump,
+    const std::map<int, int>& matNetPrices,
     const std::string& binding)
 {
     SalvageResult r;
@@ -26,21 +36,29 @@ SalvageResult Evaluate(
         r.tpDumpNet = ProfitEngine::NetRevenue(itemPrice.buyPrice);
 
     // Rare Unidentified Gear: identify then salvage (Silver-Fed).
-    // Wiki 52,207 samples: 1.3932 ecto per container.
     if (info.id == RARE_UNID_GEAR_ID && ectoNetDump > 0) {
         r.salvageEv = static_cast<int>(RARE_UNID_ECTO_YIELD * ectoNetDump);
     }
-
-    // Equipment salvage EV: level 68+ Rare/Exotic only
-    if (r.salvageEv == 0 && isEquipment && info.level >= 68 && ectoNetDump > 0) {
-        if (info.rarity == "Rare") {
+    // Green Unid Gear: direct salvage yields tier mats (Copper-Fed).
+    else if (info.id == GREEN_UNID_GEAR_ID) {
+        r.salvageEv = CalcMatSalvageEv(GreenUnidYields(), matNetPrices);
+    }
+    // Blue Unid Gear: direct salvage yields tier mats (Copper-Fed).
+    else if (info.id == BLUE_UNID_GEAR_ID) {
+        r.salvageEv = CalcMatSalvageEv(BlueUnidYields(), matNetPrices);
+    }
+    // Level 68+ equipment salvage
+    else if (isEquipment && info.level >= 68) {
+        if (info.rarity == "Rare" && ectoNetDump > 0) {
             r.salvageEv = static_cast<int>(RARE_ECTO_YIELD * ectoNetDump);
-        } else if (info.rarity == "Exotic") {
+        } else if (info.rarity == "Exotic" && ectoNetDump > 0) {
             r.salvageEv = static_cast<int>(EXOTIC_ECTO_YIELD * ectoNetDump);
+        } else if (info.rarity == "Fine" || info.rarity == "Masterwork") {
+            r.salvageEv = CalcMatSalvageEv(GreenGearYields(), matNetPrices);
         }
     }
 
-    // Junk items: always vendor
+    // Junk: always vendor
     if (info.rarity == "Junk") {
         r.verdict = SalvageVerdict::VENDOR;
         r.verdictText = "VENDOR";
@@ -54,7 +72,7 @@ SalvageResult Evaluate(
         return r;
     }
 
-    // Bound items: can't TP, choose between vendor and salvage
+    // Bound items: can't TP
     if (isBound) {
         if (r.salvageEv > r.vendorValue && r.salvageEv > 0) {
             r.verdict = SalvageVerdict::SALVAGE;
@@ -66,7 +84,7 @@ SalvageResult Evaluate(
         return r;
     }
 
-    // Unbound: compare all three options
+    // Unbound: compare all three
     int best = r.vendorValue;
     r.verdict = SalvageVerdict::VENDOR;
     r.verdictText = "VENDOR";
@@ -95,7 +113,8 @@ std::vector<SalvageResult> EvaluateInventory(
     const std::vector<GW2ApiClient::InventorySlot>& slots,
     const std::vector<ItemInfo>& itemInfos,
     const std::vector<PriceData>& itemPrices,
-    int ectoNetDump)
+    int ectoNetDump,
+    const std::map<int, int>& matNetPrices)
 {
     std::map<int, const ItemInfo*> infoMap;
     for (auto& ii : itemInfos) infoMap[ii.id] = &ii;
@@ -114,7 +133,7 @@ std::vector<SalvageResult> EvaluateInventory(
         auto priceIt = priceMap.find(slot.itemId);
         if (priceIt != priceMap.end()) pd = priceIt->second;
 
-        auto sr = Evaluate(*infoIt->second, pd, ectoNetDump, slot.binding);
+        auto sr = Evaluate(*infoIt->second, pd, ectoNetDump, matNetPrices, slot.binding);
         sr.count = slot.count;
         results.push_back(std::move(sr));
     }
