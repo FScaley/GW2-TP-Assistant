@@ -1,4 +1,9 @@
 #include "Worker.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <json.hpp>
 #include <algorithm>
 #include <ctime>
 
@@ -38,6 +43,9 @@ void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& 
     m_downloadRequested = false;
     m_scanRequested = false;
     m_inventoryRequested = false;
+    m_inventoryIdentity.clear();
+    m_inventoryLastChar.clear();
+    m_inventoryLastFp.clear();
     m_inventorySnapshot = InventorySnapshot{};
 
     m_thread = std::thread(&Worker::Run, this);
@@ -98,9 +106,9 @@ Worker::InventorySnapshot Worker::GetInventorySnapshot() const {
     return m_inventorySnapshot;
 }
 
-void Worker::RequestInventory(const std::string& characterName) {
+void Worker::RequestInventory(const std::wstring& rawIdentity) {
     std::lock_guard<std::mutex> lk(m_cvMutex);
-    m_inventoryCharName = characterName;
+    m_inventoryIdentity = rawIdentity;
     m_inventoryRequested = true;
     m_cv.notify_one();
 }
@@ -161,6 +169,8 @@ void Worker::Run() {
         bool doDownload = m_downloadRequested.exchange(false);
         bool doScan = m_scanRequested.exchange(false);
         bool doInventory = m_inventoryRequested.exchange(false);
+        std::wstring invIdentity;
+        if (doInventory) invIdentity = m_inventoryIdentity;   // copied while m_cvMutex is still held
 
         // Regular poll interval always refreshes prices (and, with it, my orders)
         if (!doPrice && !doPnl && !doOrders && !doCrafting && !doDownload && !doScan && !doInventory)
@@ -174,7 +184,7 @@ void Worker::Run() {
         if (doCrafting && !m_stop) DoCrafting();
         if (doDownload && !m_stop) DoRecipeDownload();
         if (doScan && !m_stop) DoScan();
-        if (doInventory && !m_stop) DoInventory();
+        if (doInventory && !m_stop) DoInventory(invIdentity);
     }
 }
 
@@ -1051,7 +1061,7 @@ void Worker::DoScan() {
     }
 }
 
-void Worker::DoInventory() {
+void Worker::DoInventory(const std::wstring& rawIdentity) {
     if (!m_api->HasApiKey()) return;
 
     {
@@ -1059,7 +1069,24 @@ void Worker::DoInventory() {
         m_inventorySnapshot.scanning = true;
     }
 
-    std::string charName = m_inventoryCharName;
+    // MumbleLink shared memory has no lock: a torn read gives bad JSON. Fall back to the
+    // previously scanned character before resorting to the API's first character.
+    std::string charName;
+    if (!rawIdentity.empty()) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, rawIdentity.c_str(), static_cast<int>(rawIdentity.size()),
+                                      nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            std::string ident(len, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, rawIdentity.c_str(), static_cast<int>(rawIdentity.size()),
+                                &ident[0], len, nullptr, nullptr);
+            try {
+                auto ij = nlohmann::json::parse(ident);
+                if (ij.contains("name") && ij["name"].is_string())
+                    charName = ij["name"].get<std::string>();
+            } catch (...) {}
+        }
+    }
+    if (charName.empty()) charName = m_inventoryLastChar;
     if (charName.empty()) {
         auto charNames = m_api->GetCharacterNames();
         if (!m_api->IsLastRequestOk() || charNames.empty()) {
@@ -1083,11 +1110,17 @@ void Worker::DoInventory() {
     }
     if (m_stop) return;
 
+    auto fp = SalvageCalc::Fingerprint(slots);
+    bool unchanged = !m_inventoryLastChar.empty() && charName == m_inventoryLastChar && fp == m_inventoryLastFp;
+    m_inventoryLastChar = charName;
+    m_inventoryLastFp = std::move(fp);
+
     if (slots.empty()) {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
         m_inventorySnapshot = InventorySnapshot{};
         m_inventorySnapshot.characterName = charName;
         m_inventorySnapshot.hasData = true;
+        m_inventorySnapshot.unchanged = unchanged;
         m_inventorySnapshot.lastRefresh = std::chrono::steady_clock::now();
         return;
     }
@@ -1162,6 +1195,7 @@ void Worker::DoInventory() {
     InventorySnapshot snap;
     snap.items = std::move(results);
     snap.hidden = hidden;
+    snap.unchanged = unchanged;
     snap.characterName = charName;
     snap.lastRefresh = std::chrono::steady_clock::now();
     snap.hasData = true;

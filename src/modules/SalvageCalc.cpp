@@ -301,4 +301,12 @@ std::vector<SalvageResult> EvaluateInventory(
     return results;
 }
 
+InventoryFingerprint Fingerprint(const std::vector<GW2ApiClient::InventorySlot>& slots) {
+    InventoryFingerprint fp;
+    fp.reserve(slots.size());
+    for (auto& s : slots) fp.emplace_back(s.itemId, s.count, s.binding, s.hasUpgrade);
+    std::sort(fp.begin(), fp.end());
+    return fp;
+}
+
 } // namespace SalvageCalc

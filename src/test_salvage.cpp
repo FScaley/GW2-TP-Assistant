@@ -311,6 +311,24 @@ static void TestActionable() {
     std::cout << "    PASS\n";
 }
 
+static void TestFingerprint() {
+    std::cout << "  Fingerprint (order-invariant bag comparison)...\n";
+    std::vector<GW2ApiClient::InventorySlot> a = {
+        {83008, 12, "", false}, {12345, 1, "Character", true}, {19721, 250, "", false},
+    };
+    std::vector<GW2ApiClient::InventorySlot> rearranged = { a[2], a[0], a[1] };
+    assert(Fingerprint(a) == Fingerprint(rearranged));               // moving items between bags = same data
+
+    auto fewer = a; fewer[0].count = 11;                             // one Rare Unid Gear salvaged
+    assert(Fingerprint(a) != Fingerprint(fewer));
+    auto bound = a; bound[2].binding = "Account";
+    assert(Fingerprint(a) != Fingerprint(bound));
+    auto upgraded = a; upgraded[0].hasUpgrade = true;
+    assert(Fingerprint(a) != Fingerprint(upgraded));
+    assert(Fingerprint({}).empty());
+    std::cout << "    PASS\n";
+}
+
 static void TestBatchEvaluate() {
     std::vector<GW2ApiClient::InventorySlot> slots = {
         {12345, 5, ""}, {12349, 1, "Character"}, {99999, 10, ""}, {424242, 1, ""},
@@ -348,6 +366,7 @@ int main() {
     TestUnknownStates();
     TestJunk();
     TestActionable();
+    TestFingerprint();
     TestBatchEvaluate();
     std::cout << "\n=== All tests PASSED ===\n";
     return 0;

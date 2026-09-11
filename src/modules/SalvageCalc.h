@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <tuple>
 
 // Inventory decision: vendor vs TP dump vs salvage, per item.
 //
@@ -133,5 +134,11 @@ std::vector<SalvageResult> EvaluateInventory(
     const std::vector<PriceData>& itemPrices,
     const std::map<int, int>& netPrices
 );
+
+// Order-invariant summary of bag contents (sorted), so two scans can be compared exactly.
+// The GW2 API serves character data from a backend cache (~1-5 min behind the game); when a
+// re-scan returns the same fingerprint the UI says so instead of pretending the data is fresh.
+using InventoryFingerprint = std::vector<std::tuple<int, int, std::string, bool>>;  // id, count, binding, hasUpgrade
+InventoryFingerprint Fingerprint(const std::vector<GW2ApiClient::InventorySlot>& slots);
 
 } // namespace SalvageCalc

@@ -53,7 +53,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 6;
+    AddonDef.Version.Build = 7;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -116,7 +116,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.6 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.7 loaded.");
 }
 
 void AddonUnload() {
@@ -1553,31 +1553,45 @@ void AddonRender() {
                 auto invSnap = g_worker->GetInventorySnapshot();
 
                 // Header: character name + refresh button
+                // Render thread only copies the raw MumbleLink buffer; decode + JSON parse happen on the worker.
+                auto requestInventoryScan = []() {
+                    std::wstring raw;
+                    if (MumbleLink && MumbleLink->Identity[0] != 0) {
+                        size_t n = 0;
+                        while (n < 256 && MumbleLink->Identity[n] != 0) n++;
+                        raw.assign(MumbleLink->Identity, n);
+                    }
+                    g_worker->RequestInventory(raw);
+                };
+
                 if (invSnap.hasData) {
                     ImGui::Text("Karakter: %s", invSnap.characterName.c_str());
                     ImGui::SameLine();
                 }
                 if (invSnap.scanning) {
                     ImGui::TextDisabled("Taraniyor...");
-                } else {
-                    if (ImGui::Button("Tara##inv")) {
-                        std::string activeChar;
-                        if (MumbleLink && MumbleLink->Identity[0] != 0) {
-                            try {
-                                int len = WideCharToMultiByte(CP_UTF8, 0,
-                                    MumbleLink->Identity, -1, nullptr, 0, nullptr, nullptr);
-                                if (len > 0) {
-                                    std::string ident(len - 1, '\0');
-                                    WideCharToMultiByte(CP_UTF8, 0,
-                                        MumbleLink->Identity, -1, &ident[0], len, nullptr, nullptr);
-                                    auto ij = nlohmann::json::parse(ident);
-                                    if (ij.contains("name"))
-                                        activeChar = ij["name"].get<std::string>();
-                                }
-                            } catch (...) {}
-                        }
-                        g_worker->RequestInventory(activeChar);
+                } else if (ImGui::Button("Tara##inv")) {
+                    requestInventoryScan();
+                }
+                if (invSnap.hasData) {
+                    auto now = std::chrono::steady_clock::now();
+                    long long age = std::chrono::duration_cast<std::chrono::seconds>(now - invSnap.lastRefresh).count();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Son tarama: %lld sn once | otomatik 60 sn", age);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("GW2 API karakter verisini sunucu tarafinda ~1-5 dk onbellekler;\n"
+                                          "addon bunu hizlandiramaz (cache-bust / auth yontemi denendi, etkisiz).\n"
+                                          "Sekme acikken 60 sn'de bir yeniden tarar.");
+                    // Auto-refresh while the tab is visible; throttle so a few frames before the worker
+                    // flips `scanning` don't queue duplicate requests.
+                    static std::chrono::steady_clock::time_point lastAutoReq{};
+                    if (!invSnap.scanning && age >= 60 &&
+                        std::chrono::duration_cast<std::chrono::seconds>(now - lastAutoReq).count() >= 5) {
+                        lastAutoReq = now;
+                        requestInventoryScan();
                     }
+                    if (invSnap.unchanged)
+                        ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "Veri degismedi - API ~1-5 dk gecikmeli olabilir");
                 }
 
                 if (invSnap.stale) {
@@ -1749,7 +1763,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.9.6");
+    ImGui::Text("TP Assistant v0.9.7");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

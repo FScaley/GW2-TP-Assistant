@@ -175,10 +175,12 @@ public:
         int totalVendor = 0;
         int totalBest = 0;
         int hidden = 0;         // items dropped from the list: neither TP-sellable nor salvageable
+        bool unchanged = false; // this scan returned exactly the previous bag contents (API backend lag or nothing changed)
         std::string error;      // non-empty on failure (shown in UI)
     };
     InventorySnapshot GetInventorySnapshot() const;
-    void RequestInventory(const std::string& characterName = "");
+    // rawIdentity: MumbleLink Identity buffer copied verbatim (UTF-16 JSON); decoded and parsed on the worker.
+    void RequestInventory(const std::wstring& rawIdentity = L"");
 
     std::vector<AlertMsg> DrainAlerts();
 
@@ -196,7 +198,7 @@ private:
     void DoCrafting();
     void DoRecipeDownload();
     void DoScan();
-    void DoInventory();
+    void DoInventory(const std::wstring& rawIdentity);
     void StampBook(ScanResult& sr, const std::vector<BookLevel>& buys, const std::vector<BookLevel>& sells);
     void ResolveNames(const std::vector<int>& ids);
 
@@ -239,7 +241,7 @@ private:
     std::atomic<bool> m_downloadRequested{false};
     std::atomic<bool> m_scanRequested{false};
     std::atomic<bool> m_inventoryRequested{false};
-    std::string m_inventoryCharName;  // set by RequestInventory, read by DoInventory
+    std::wstring m_inventoryIdentity;   // written under m_cvMutex by RequestInventory; Run() copies it under the lock
     std::string m_scanDiscipline;
     int m_scanMaxRating = 400;
     struct ChainPair { RecipeInfo tier1; RecipeInfo tier2; };
@@ -250,8 +252,11 @@ private:
     std::set<int> m_gatedItemIds;
     bool m_recipesResolved = false;
 
-    // Inventory salvage
+    // Inventory salvage. Last scanned character + contents live worker-side for unchanged detection
+    // and as the fallback name when a MumbleLink identity read is torn.
     InventorySnapshot m_inventorySnapshot;
+    std::string m_inventoryLastChar;
+    SalvageCalc::InventoryFingerprint m_inventoryLastFp;
 
     // Scan output IDs whose volume we track alongside the watchlist. Worker-thread only.
     std::vector<int> m_scanVolumeIds;

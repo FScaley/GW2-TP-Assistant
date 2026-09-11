@@ -1291,7 +1291,39 @@ deposu yok); tpList yalnız bilgi.
 
 - [x] ItemInfo + envanter endpoint'leri; SalvageCalc profilleri; Worker DoInventory; Canta sekmesi; test_salvage
 - [x] Ham wiki verisiyle yield/ID doğrulaması; CLAUDE.md model + release checklist
-- [ ] **Oyun içi doğrulama:** soulbound bir item'ın TP sütununda "bound" yazması (`binding` alanı bu oturumda gerçek
-      envanterle hiç görülmedi — yazmıyorsa bound dalı ölü, her soulbound rare hayalet "TP SAT" alır); Rare Unid Gear →
-      AC+SALVAGE; Türkçe karakter adıyla tarama; scope eksik key ile kırmızı hata mesajı
+- [ ] **Oyun içi doğrulama:** soulbound bir item'ın TP sütununda "bound" yazması — `binding` alanı resmi doküman
+      örneğiyle (`"binding": "Account"` / `"Character"`) **doğrulandı**, canlı teyit bekliyor: kullanıcının çantasında
+      11 Eyl'de bound item yoktu (23 slot, 0 `binding`, 0 `upgrades`). İlk bound item düştüğünde kontrol edilir.
+      Ayrıca: Rare Unid Gear → AC+SALVAGE; Türkçe karakter adıyla tarama; scope eksik key ile kırmızı hata mesajı
 - [ ] Sonraki: level 68 altı tier-mat tabloları (wiki drop research), exotic mat/mote verisi, banka/malzeme deposu
+
+#### 9g: API gecikmesi — "sattım ama hâlâ görünüyor" (v0.9.7)
+
+**Şikâyet:** Tara'ya basınca 1-2 dk eski veri geliyor; salvage edilen item hâlâ listede, tekrar Tara da düzeltmiyor.
+
+**Teşhis (11 Eyl 2026, kullanıcının key'iyle script'ten test — key basılmadı/saklanmadı):**
+- `/v2/characters` → `Cache-Control: private, max-age=300`, `Expires: +5 dk`. Karakter verisi sunucu tarafında **5 dk** önbellekli.
+- `/v2/characters/:name/inventory` → **hiç cache başlığı yok**; aynı URL ×2, `&_=rastgele` cache-bust ve `Authorization: Bearer`
+  varyantları **bayt-bayt aynı** gövdeyi döndürdü. Gecikme HTTP önbelleği değil, ArenaNet arka uç senkronu — addon
+  tarafında hızlandırılamaz. Wiki "Cache Validation" bölümü stub (Last-Modified yok).
+- Yan bulgu: `X-Rate-Limit-Limit: 600` (dokümandaki 300 değil).
+
+**Tasarım — tazelik iddiası değil, beklenti + yakınsama:**
+- Başlıkta "Son tarama: N sn önce · otomatik 60 sn" (tooltip: önbellek açıklaması). Sekme açıkken 60 sn'de bir otomatik
+  `RequestInventory` (render thread'de 5 sn throttle — worker `scanning`'i çevirmeden birkaç frame'de çift istek oluşmasın).
+- `SalvageCalc::Fingerprint(slots)` — sıralı `(id, count, binding, hasUpgrade)` vektörü (saf, test edildi: çanta içinde
+  yer değiştirme = aynı, adet/binding/upgrade farkı = farklı). Worker önceki taramayla **tam eşitlik** karşılaştırır →
+  `InventorySnapshot.unchanged` → turuncu "Veri değişmedi — API ~1-5 dk gecikmeli olabilir" (değişmemiş çanta da aynı
+  sonucu verir; "API güncellemedi" diye iddia edilmez).
+- Başlık-güdümlü zamanlama (Expires'a göre) **yapılmadı**: inventory başlık göndermiyor, `/v2/characters`'ın 300 sn'sini ona
+  atfetmek doğrulanamaz varsayım. 60 sn polling dürüst tasarım.
+
+**Yan düzeltmeler (advisor):**
+- Veri yarışı: `m_inventoryCharName` render thread'de `m_cvMutex` altında yazılıp worker'da kilitsiz okunuyordu; 60 sn
+  kadansta sürekli açık pencere. `Run()` kilit hâlâ tutulurken kopyalar, `DoInventory(param)` alır. (`m_scanDiscipline`'de
+  aynı gizli yarış var — bu release'de dokunulmadı, not edildi.)
+- MumbleLink `Identity` JSON parse'ı render thread'den worker'a taşındı (proje kuralı); render thread yalnız 256 wchar
+  kopyalar. Bozuk (torn) okuma → önceki karakter adı, o da yoksa `/v2/characters[0]`.
+
+**Takip önerisi (kullanıcıya soruldu, yapılmadı):** satır tıklayınca "İşlendi" işareti — API o `(id, count)` slotunu
+döndürmeyi bırakınca kendini temizler; gecikme sırasında sekmeyi gerçekten kullanılır kılar.
