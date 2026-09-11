@@ -48,13 +48,19 @@ namespace SalvageCalc {
 constexpr int ECTO_ID = 19721;
 
 // Yield rates for level 68+ equipment salvaged with Master/Silver-Fed kit.
-// From tp-flipping-plan.md line 147 — not independently verified against wiki research data.
-// TODO v2: fetch GW2 Wiki "Research:Salvage" pages and update with sourced numbers.
-constexpr double RARE_ECTO_YIELD = 0.9;         // ~0.9 ecto per level 68+ rare
-constexpr double EXOTIC_ECTO_YIELD = 1.5;       // ~1.0-2.0, rough estimate, level-dependent
+// Wiki "Research:Salvage" — 52K+ sample for rares, 500+ for exotics (verified Sep 2026).
+constexpr double RARE_ECTO_YIELD = 0.9;         // wiki: 0.88-0.90 per level 68+ rare
+constexpr double EXOTIC_ECTO_YIELD = 1.25;      // wiki Talk:Glob_of_Ectoplasm, 500+ sample
 
-// Not modeled in v1: rune/sigil recovery, dark matter (exotic-only), identify-then-salvage
-// for unidentified gear, fine/masterwork tier mat yields.
+// Unidentified Gear containers — identify then salvage yields.
+// Wiki "Piece of Rare Unidentified Gear/Salvage Rate" — 52,207 samples.
+constexpr int RARE_UNID_GEAR_ID = 83008;
+constexpr int GREEN_UNID_GEAR_ID = 84731;       // Piece of Unidentified Gear (Masterwork)
+constexpr double RARE_UNID_ECTO_YIELD = 1.39;   // identify + salvage (Silver-Fed)
+constexpr double GREEN_UNID_ECTO_YIELD = 0.18;  // ~18% chance of rare inside, then 0.9 ecto
+
+// Not modeled in v1: rune/sigil recovery, dark matter (exotic-only ~0.5/exotic),
+// fine/masterwork tier mat yields, Black Lion kit higher rates.
 
 // Evaluate a single inventory item.
 // matPrices: mapping of material item IDs to their TP buy prices (for valuing salvage output).

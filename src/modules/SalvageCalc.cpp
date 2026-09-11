@@ -27,8 +27,18 @@ SalvageResult Evaluate(
     if (!isBound && itemPrice.buyPrice > 0)
         r.tpDumpNet = ProfitEngine::NetRevenue(itemPrice.buyPrice);
 
-    // Salvage EV: only for equipment level 68+ Rare/Exotic
-    if (canSalvage && info.level >= 68 && ectoNetDump > 0) {
+    // Unidentified Gear containers: identify then salvage (Silver-Fed).
+    // These are type "Container" but their real value is identify → salvage → ecto.
+    if (ectoNetDump > 0) {
+        if (info.id == RARE_UNID_GEAR_ID) {
+            r.salvageEv = static_cast<int>(RARE_UNID_ECTO_YIELD * ectoNetDump);
+        } else if (info.id == GREEN_UNID_GEAR_ID) {
+            r.salvageEv = static_cast<int>(GREEN_UNID_ECTO_YIELD * ectoNetDump);
+        }
+    }
+
+    // Equipment salvage EV: level 68+ Rare/Exotic
+    if (r.salvageEv == 0 && canSalvage && info.level >= 68 && ectoNetDump > 0) {
         if (info.rarity == "Rare") {
             r.salvageEv = static_cast<int>(RARE_ECTO_YIELD * ectoNetDump);
         } else if (info.rarity == "Exotic") {
@@ -36,11 +46,8 @@ SalvageResult Evaluate(
         }
     }
 
-    // Fine/Masterwork: salvage yields tier mats, but valuing them requires a full
-    // material price table per level bracket. v1 skips salvage EV for these and
-    // compares vendor vs TP only. The verdict for these is usually "TP if tradeable,
-    // vendor if bound" — salvage is rarely worth more than vendor for green/blue gear.
-    // TODO: add tier mat yield table in v2.
+    // Fine/Masterwork equipment: tier mat yields not modeled in v1.
+    // TODO v2: add tier mat yield table per level bracket.
 
     // Junk items: always vendor
     if (info.rarity == "Junk") {
@@ -82,7 +89,8 @@ SalvageResult Evaluate(
     if (r.salvageEv > best) {
         best = r.salvageEv;
         r.verdict = SalvageVerdict::SALVAGE;
-        r.verdictText = "SALVAGE";
+        bool isUnid = (info.id == RARE_UNID_GEAR_ID || info.id == GREEN_UNID_GEAR_ID);
+        r.verdictText = isUnid ? "AC+SALVAGE" : "SALVAGE";
     }
 
     // No data at all

@@ -118,12 +118,43 @@ static void TestExoticSalvage() {
     std::cout << "    vendor=" << r.vendorValue << " tpDump=" << r.tpDumpNet
               << " salvageEv=" << r.salvageEv << " verdict=" << r.verdictText << "\n";
 
-    // salvageEv = 1.5 * 1728 = 2592
+    // salvageEv = 1.25 * 1728 = 2160
     assert(r.salvageEv == static_cast<int>(SalvageCalc::EXOTIC_ECTO_YIELD * ectoNetDump));
     // tpDump = NetRevenue(5000) = 5000 - 250 - 500 = 4250
     assert(r.tpDumpNet == ProfitEngine::NetRevenue(5000));
-    // TP (4250) > salvage (2592) > vendor (396) -> TP SAT
+    // TP (4250) > salvage (2160) > vendor (396) -> TP SAT
     assert(r.verdict == SalvageVerdict::TP_SELL);
+    std::cout << "    PASS\n";
+}
+
+static void TestRareUnidGear() {
+    std::cout << "  Piece of Rare Unidentified Gear (identify+salvage)...\n";
+    ItemInfo info;
+    info.id = 83008;
+    info.name = "Piece of Rare Unidentified Gear";
+    info.rarity = "Rare";
+    info.type = "Container";
+    info.level = 80;
+    info.vendorValue = 100;
+
+    PriceData pd;
+    pd.itemId = 83008;
+    pd.buyPrice = 1774;   // ~17s 74c
+    pd.sellPrice = 1775;
+
+    // Ecto buy 2198 (21s 98c) -> NetRevenue = 2198 - 109 - 219 = 1870
+    int ectoNetDump = ProfitEngine::NetRevenue(2198);
+
+    auto r = SalvageCalc::Evaluate(info, pd, ectoNetDump, "");
+
+    std::cout << "    vendor=" << r.vendorValue << " tpDump=" << r.tpDumpNet
+              << " salvageEv=" << r.salvageEv << " verdict=" << r.verdictText << "\n";
+
+    // salvageEv = 1.39 * ectoNetDump >> tpDumpNet
+    assert(r.salvageEv == static_cast<int>(SalvageCalc::RARE_UNID_ECTO_YIELD * ectoNetDump));
+    assert(r.salvageEv > r.tpDumpNet);
+    assert(r.verdict == SalvageVerdict::SALVAGE);
+    assert(r.verdictText == "AC+SALVAGE");
     std::cout << "    PASS\n";
 }
 
@@ -209,6 +240,7 @@ int main() {
     TestRareSalvageBetter();
     TestBoundItem();
     TestExoticSalvage();
+    TestRareUnidGear();
     TestJunkItem();
     TestLowLevelRare();
     TestBatchEvaluate();
