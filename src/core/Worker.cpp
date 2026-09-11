@@ -164,23 +164,31 @@ void Worker::Run() {
 
 void Worker::PollOnce() {
     auto watchlist = m_config->GetWatchlist();
-    if (watchlist.empty()) return;
 
     std::vector<int> ids;
     ids.reserve(watchlist.size());
     for (auto& item : watchlist)
         ids.push_back(item.id);
 
+    // Volume tracking covers watchlist + scan output items (max ~50 extra, under the 200 batch limit).
+    std::vector<int> volIds = ids;
+    for (int sid : m_scanVolumeIds) {
+        if (std::find(volIds.begin(), volIds.end(), sid) == volIds.end())
+            volIds.push_back(sid);
+    }
+
+    if (volIds.empty()) return;
+
     auto prices = m_api->GetPrices(ids);
 
-    if (!m_api->IsLastRequestOk()) {
+    if (!ids.empty() && !m_api->IsLastRequestOk()) {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
         m_snapshot.apiOk = false;
         return;
     }
 
-    // Order books: a failure here must not drop prices — carry the previous ladder forward.
-    auto books = m_api->GetListings(ids);
+    // Order books: fetch for watchlist + scan items. Failure must not drop prices.
+    auto books = m_api->GetListings(volIds);
     bool booksOk = m_api->IsLastRequestOk();
     WatchlistSnapshot prev = GetSnapshot();
 
@@ -203,11 +211,27 @@ void Worker::PollOnce() {
             m_prevBooks[ob.itemId] = { ob.buys, ob.sells, wallNow };
         }
         for (auto it = m_prevBooks.begin(); it != m_prevBooks.end();) {
-            if (std::find(ids.begin(), ids.end(), it->first) == ids.end()) it = m_prevBooks.erase(it);
+            if (std::find(volIds.begin(), volIds.end(), it->first) == volIds.end()) it = m_prevBooks.erase(it);
             else ++it;
         }
         m_volume.Prune(epochHour);
         m_volume.Save(m_dataDir + "\\volume_history.json");
+
+        // Stamp scan results with volume estimates (sell-side only — we craft then sell).
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        for (auto& sr : m_scanSnapshot.results) {
+            sr.vol = m_volume.Estimate(sr.cost.outputItemId, epochHour);
+            sr.sellHours = 0;
+            sr.sharePct = 0;
+            if (sr.vol.ok && sr.orderQty > 0) {
+                double sph = sr.vol.soldPerDay / 24.0;
+                int unitsToSell = sr.orderQty * sr.cost.outputCount;
+                if (sph > 0.0) {
+                    sr.sellHours = unitsToSell / sph;
+                    sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
+                }
+            }
+        }
     }
 
     // Resolve placeholder names
@@ -318,7 +342,7 @@ void Worker::PollOnce() {
         snap.entries.push_back(entry);
     }
 
-    m_firstPoll = false;
+    if (!watchlist.empty()) m_firstPoll = false;
 
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
@@ -829,7 +853,9 @@ void Worker::DoScan() {
             sr.outputBuyQty = outIt->second.buyQty;
             sr.outputSellQty = outIt->second.sellQty;
             sr.sellRisky = sr.outputSellQty > 3 * sr.outputBuyQty && sr.outputBuyQty < 1000;
+            sr.thinMarket = sr.outputSellQty < 10 || sr.outputBuyQty < 10;
         }
+        sr.buyRisky = sr.cost.profitInstant <= 0 && sr.cost.profit > 0;
 
         if (sr.cost.profit <= 0) unprofitableCount++;
         results.push_back(std::move(sr));
@@ -863,6 +889,33 @@ void Worker::DoScan() {
             for (auto& l : sr.cost.lines) {
                 auto lit = m_nameCache.find(l.itemId);
                 if (lit != m_nameCache.end()) l.name = lit->second;
+            }
+        }
+    }
+
+    // Feed profitable output items into the volume loop so PollOnce tracks their order books.
+    {
+        std::set<int> volSet;
+        for (auto& r : results)
+            if (r.cost.profit > 0) volSet.insert(r.cost.outputItemId);
+        m_scanVolumeIds.assign(volSet.begin(), volSet.end());
+    }
+
+    // Stamp existing volume data so Devir doesn't blank after re-scan (m_volume is worker-only).
+    {
+        auto now = std::chrono::system_clock::now();
+        int64_t eh = std::chrono::duration_cast<std::chrono::hours>(now.time_since_epoch()).count();
+        for (auto& sr : results) {
+            sr.vol = m_volume.Estimate(sr.cost.outputItemId, eh);
+            sr.sellHours = 0;
+            sr.sharePct = 0;
+            if (sr.vol.ok && sr.orderQty > 0) {
+                double sph = sr.vol.soldPerDay / 24.0;
+                int unitsToSell = sr.orderQty * sr.cost.outputCount;
+                if (sph > 0.0) {
+                    sr.sellHours = unitsToSell / sph;
+                    sr.sharePct = unitsToSell * 100.0 / sr.vol.soldPerDay;
+                }
             }
         }
     }

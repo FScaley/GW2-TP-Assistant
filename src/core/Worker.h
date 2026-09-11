@@ -111,6 +111,11 @@ public:
         int outputBuyQty = 0;            // TP demand for output
         int outputSellQty = 0;           // TP supply for output
         bool sellRisky = false;          // supply > 3× demand
+        bool buyRisky = false;           // profitInstant <= 0 && profit > 0: ingredient buy orders won't fill
+        bool thinMarket = false;         // outputSellQty < 10 || outputBuyQty < 10: unreliable prices
+        VolumeEstimate vol;              // from VolumeTracker (populated after PollOnce runs)
+        double sellHours = 0;            // (orderQty * outputCount) / hourly sold
+        double sharePct = 0;             // units as % of daily sold volume
     };
     struct ScanSnapshot {
         std::vector<ScanResult> results;
@@ -206,6 +211,9 @@ private:
     std::map<int, RecipeInfo> m_subRecipeCache;         // craftable sub-ingredients
     std::set<int> m_gatedItemIds;
     bool m_recipesResolved = false;
+
+    // Scan output IDs whose volume we track alongside the watchlist. Worker-thread only.
+    std::vector<int> m_scanVolumeIds;
 
     // Previous full ladder per item, worker-thread only (never in the snapshot).
     // system_clock on purpose: a suspend/clock jump becomes one discarded interval via the gap rule.

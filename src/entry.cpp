@@ -50,9 +50,9 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
-    AddonDef.Version.Minor = 7;
+    AddonDef.Version.Minor = 8;
     AddonDef.Version.Build = 0;
-    AddonDef.Version.Revision = 1;
+    AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
     AddonDef.Load = AddonLoad;
@@ -114,7 +114,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.7 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.8 loaded.");
 }
 
 void AddonUnload() {
@@ -1197,7 +1197,12 @@ void AddonRender() {
                             static int lastSortCol = -1;
                             static bool lastSortAsc = false;
 
-                            if (ImGui::BeginTable("##scan", 9,
+                            static bool onlyDemandFilter = false;
+                            ImGui::Checkbox("Talep > Arz", &onlyDemandFilter);
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("Sadece alici sayisi satici sayisindan fazla olan urunleri goster.");
+
+                            if (ImGui::BeginTable("##scan", 13,
                                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
                                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp |
                                     ImGuiTableFlags_Sortable,
@@ -1209,14 +1214,18 @@ void AddonRender() {
                                 ImGui::TableSetupColumn("Satis", 0, 1.2f);
                                 ImGui::TableSetupColumn("Kar", 0, 1.0f);
                                 ImGui::TableSetupColumn("ROI", 0, 0.6f);
-                                ImGui::TableSetupColumn("Kar/Emir", 0, 1.2f);
-                                ImGui::TableSetupColumn("Durum", 0, 1.0f);
+                                ImGui::TableSetupColumn("Kar/Emir", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_DefaultSort, 1.2f);
+                                ImGui::TableSetupColumn("Talep", ImGuiTableColumnFlags_PreferSortDescending, 0.8f);
+                                ImGui::TableSetupColumn("Arz", ImGuiTableColumnFlags_PreferSortDescending, 0.8f);
+                                ImGui::TableSetupColumn("Devir", ImGuiTableColumnFlags_PreferSortAscending, 0.9f);
+                                ImGui::TableSetupColumn("Durum", ImGuiTableColumnFlags_NoSort, 1.0f);
+                                ImGui::TableSetupColumn("##ekle", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoResize, 0.3f);
                                 ImGui::TableSetupScrollFreeze(0, 1);
                                 ImGui::TableHeadersRow();
 
-                                // Sort handling
+                                // Sort handling — always rebuild when specs exist (Devir mutates every poll).
                                 if (auto* specs = ImGui::TableGetSortSpecs()) {
-                                    if (specs->SpecsDirty || sortedIdx.size() != scanSnap.results.size()) {
+                                    {
                                         sortedIdx.resize(scanSnap.results.size());
                                         for (int i = 0; i < (int)sortedIdx.size(); i++) sortedIdx[i] = i;
                                         if (specs->SpecsCount > 0) {
@@ -1235,6 +1244,17 @@ void AddonRender() {
                                                         case 5: va = res[a].cost.profit; vb = res[b].cost.profit; break;
                                                         case 6: va = (int)res[a].cost.roi; vb = (int)res[b].cost.roi; break;
                                                         case 7: va = res[a].profitPerOrder; vb = res[b].profitPerOrder; break;
+                                                        case 8: va = res[a].outputBuyQty; vb = res[b].outputBuyQty; break;
+                                                        case 9: va = res[a].outputSellQty; vb = res[b].outputSellQty; break;
+                                                        case 10: {
+                                                            auto key = [](const Worker::ScanResult& s) -> double {
+                                                                if (!s.vol.ok) return 1e12;
+                                                                if (s.vol.soldPerDay <= 0) return 1e11;
+                                                                return s.sellHours;
+                                                            };
+                                                            double ka = key(res[a]), kb = key(res[b]);
+                                                            return asc ? ka < kb : ka > kb;
+                                                        }
                                                         default: return false;
                                                     }
                                                     return asc ? va < vb : va > vb;
@@ -1248,6 +1268,7 @@ void AddonRender() {
                                     auto& sr = scanSnap.results[idx];
                                     // Budget filter
                                     if (sr.cost.totalCost > budgetCopper) continue;
+                                    if (onlyDemandFilter && sr.outputBuyQty <= sr.outputSellQty) continue;
                                     if (shown >= 50) break;
                                     shown++;
 
@@ -1312,24 +1333,99 @@ void AddonRender() {
                                     ImGui::TextColored(sr.profitPerOrder > 0 ? green : red,
                                         "%s", ProfitEngine::FormatCopper(sr.profitPerOrder).c_str());
                                     if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("Emir boyutu: %d adet\nKar/emir (anlik): %s\nTalep: %d | Arz: %d",
-                                            sr.orderQty,
-                                            ProfitEngine::FormatCopper(sr.profitPerOrderInstant).c_str(),
-                                            sr.outputBuyQty, sr.outputSellQty);
+                                        ImGui::SetTooltip("Emir boyutu: %d adet (x%d urun = %d birim)\n"
+                                                          "Kar/emir (anlik): %s",
+                                            sr.orderQty, sr.cost.outputCount,
+                                            sr.orderQty * sr.cost.outputCount,
+                                            ProfitEngine::FormatCopper(sr.profitPerOrderInstant).c_str());
                                     }
 
-                                    // Status
+                                    // Talep (demand)
                                     ImGui::TableNextColumn();
-                                    if (sr.sellRisky) {
-                                        ImGui::TextColored(red, "SATIS RISKLI");
+                                    ImGui::Text("%s", FormatQty(sr.outputBuyQty).c_str());
+
+                                    // Arz (supply) — color by ratio like the watchlist
+                                    ImGui::TableNextColumn();
+                                    {
+                                        float ratio = sr.outputBuyQty > 0 ? (float)sr.outputSellQty / sr.outputBuyQty : 99.0f;
+                                        ImVec4 supplyCol = ratio < 1.0f ? green : ratio < 3.0f ? yellow : red;
+                                        ImGui::TextColored(supplyCol, "%s", FormatQty(sr.outputSellQty).c_str());
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Arz/Talep orani: %.1fx\n"
+                                                              "< 1x = alici cok (yesil)\n"
+                                                              "1-3x = dengeli (sari)\n"
+                                                              "> 3x = satici cok (kirmizi)",
+                                                              ratio);
+                                    }
+
+                                    // Devir — sell-side only (we craft then list)
+                                    ImGui::TableNextColumn();
+                                    if (!sr.vol.ok) {
+                                        ImGui::TextDisabled("--");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Veri toplaniyor (>= 2 sa gerekli).\n"
+                                                              "Addon acikken otomatik dolar.");
+                                    } else if (sr.vol.soldPerDay <= 0) {
+                                        ImGui::TextColored(red, "SATILMIYOR");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("%.1f saatte 0 birim satildi — bu urun hareket etmiyor.",
+                                                              sr.vol.observedSec / 3600.0);
+                                    } else {
+                                        ImVec4 dCol = sr.sellHours <= 24.0 ? green : sr.sellHours <= 72.0 ? yellow : red;
+                                        ImGui::TextColored(dCol, "%s", FormatHours(sr.sellHours).c_str());
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Satis suresi: %s (%d birim satmak icin)\n"
+                                                              "Gunluk satilan: ~%.0f birim\n"
+                                                              "Piyasa payi: %%%.1f",
+                                                              FormatHours(sr.sellHours).c_str(),
+                                                              sr.orderQty * sr.cost.outputCount,
+                                                              sr.vol.soldPerDay, sr.sharePct);
+                                    }
+
+                                    // Durum — priority: ZARAR > SATILMIYOR > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK
+                                    ImGui::TableNextColumn();
+                                    if (sr.cost.profit <= 0) {
+                                        ImGui::TextColored(red, "ZARAR");
+                                    } else if (sr.vol.ok && sr.vol.soldPerDay <= 0) {
+                                        ImGui::TextColored(red, "SATILMIYOR");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Olculdu: %.1f saatte 0 birim satildi.\n"
+                                                              "Bu urunu craftlamaya degmez.",
+                                                              sr.vol.observedSec / 3600.0);
+                                    } else if (sr.thinMarket) {
+                                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "INCE PIYASA");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Talep: %d | Arz: %d\n"
+                                                              "Cok az emir var — satis fiyati guvensiz.\n"
+                                                              "ROI yaniltici olabilir.",
+                                                              sr.outputBuyQty, sr.outputSellQty);
+                                    } else if (sr.buyRisky) {
+                                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "ALIM RISKLI");
+                                        if (ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("Sabirli kar: %s | Anlik kar: %s\n"
+                                                              "Anlik karsiz — malzeme alis emirleri dolmayabilir.\n"
+                                                              "Yuksek ROI'nin sebebi genis spread.",
+                                                              ProfitEngine::FormatCopper(sr.cost.profit).c_str(),
+                                                              ProfitEngine::FormatCopper(sr.cost.profitInstant).c_str());
+                                    } else if (sr.sellRisky) {
+                                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "SATIS RISKLI");
                                         if (ImGui::IsItemHovered())
                                             ImGui::SetTooltip("Arz (%d) > 3x Talep (%d)\n"
-                                                              "Satis tarafinda kuyruk uzun — emir dolmayabilir.\n"
-                                                              "Bu arz/talep proxy — gercek Devir icin Watchlist'e ekle.",
+                                                              "Satis tarafinda kuyruk uzun — emir dolmayabilir.",
                                                               sr.outputSellQty, sr.outputBuyQty);
                                     } else {
                                         ImGui::TextColored(green, "OK");
                                     }
+
+                                    // Watchlist'e ekle butonu
+                                    ImGui::TableNextColumn();
+                                    if (ImGui::SmallButton("+")) {
+                                        g_config->AddToWatchlist(sr.cost.outputItemId, sr.cost.outputName);
+                                        g_config->Save(g_configPath);
+                                        g_worker->ForcePoll();
+                                    }
+                                    if (ImGui::IsItemHovered())
+                                        ImGui::SetTooltip("Watchlist'e ekle — gercek Devir verisi toplar.");
 
                                     ImGui::PopID();
                                 }
@@ -1352,7 +1448,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.7");
+    ImGui::Text("TP Assistant v0.8");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";
