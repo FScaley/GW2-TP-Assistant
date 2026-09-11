@@ -1201,6 +1201,14 @@ void AddonRender() {
                             ImGui::Checkbox("Talep > Arz", &onlyDemandFilter);
                             if (ImGui::IsItemHovered())
                                 ImGui::SetTooltip("Sadece alici sayisi satici sayisindan fazla olan urunleri goster.");
+                            ImGui::SameLine();
+                            static int minDemand = 0;
+                            ImGui::SetNextItemWidth(100);
+                            ImGui::InputInt("Min Talep", &minDemand, 1000, 5000);
+                            if (minDemand < 0) minDemand = 0;
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("Sadece bu kadar veya daha fazla alis emri olan urunleri goster.\n"
+                                                  "0 = filtre kapalı.");
 
                             if (ImGui::BeginTable("##scan", 13,
                                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
@@ -1272,6 +1280,7 @@ void AddonRender() {
                                     // Budget filter
                                     if (sr.cost.totalCost > budgetCopper) continue;
                                     if (onlyDemandFilter && sr.outputBuyQty <= sr.outputSellQty) continue;
+                                    if (minDemand > 0 && sr.outputBuyQty < minDemand) continue;
                                     if (shown >= 50) break;
                                     shown++;
 
