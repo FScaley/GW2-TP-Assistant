@@ -867,35 +867,36 @@ Compact array format — JSON objeleri 12K recipe'de 5+ MB olur, array format ~2
 
 #### 7b: Crafting Profit Tarayıcı
 
-**Tarama akışı (DoScan):**
+**Tarama akışı (DoScan, v0.8.8+ — 3 fazlı VWAP-first pipeline):**
 1. Filter: discipline + rating → aday recipe listesi (ör. Chef 0-400 → ~300 recipe)
-2. Output fiyatları çek (batch 200) — ön-filtre: `sellPrice == 0` (TP'de yok/satılamaz) veya
-   `NetRevenue(sellPrice) × outputCount < 100c` (gelir 1s altı, kâr imkansız) → atla.
-   **ÖNEMLİ: flip spread'e bakılmaz** — craft maliyeti output buyPrice ile ilgisiz; tam tersi,
-   dar flip spread'li itemlar en iyi craft arbitrage hedefleri olabilir.
-3. Kalan adayların (~50-100) tüm ingredient ID'lerini topla.
-   **Sub-recipe çözümleme yapılmaz** — scanner düz (flat) fiyatlandırma kullanır: her malzeme TP'den
-   alınır. Neden: (a) API call sayısını sınırlar, (b) recursive craft farklı disiplinler gerektirir
-   (kullanıcıda olmayabilir). Derin analiz tek-item Reçete Hesaplayıcı'da kalır.
-4. Ingredient fiyatları çek (batch 200)
-5. Her aday için `CraftingCalc::CalcRecipeCost(recipe, prices, EMPTY_MAP, vendor, names, gated)`
-   — subRecipes = boş map (flat pricing)
-6. Sıralama: **kâr/emir** (emir ekonomisi) — aynı Faz 1'deki metrik:
-   `orderQty = min(250, positionCapital / totalCost)`, `profitPerOrder = profit × orderQty`.
-   Tek-craft kâr tuzak: 5c kârlı ×250 stack ile 5g kârlı günde-10-satılan item'ı doğru karşılaştırmak
-   için emir bazlı sıralama şart.
+2. Output fiyatları çek (batch 200) — ön-filtre: `sellPrice == 0` VEYA `buyPrice == 0` (sıfır talep =
+   junk gear eleme) veya `NetRevenue(buyPrice) × outputCount < 100c` → atla.
+3. Kalan adayların tüm ingredient ID'lerini topla. **Sub-recipe çözümleme yapılmaz** (flat pricing).
+4. Ingredient fiyatları çek (batch 200). buyPrice=0 olan malzemelerde sellPrice fallback.
+5. Her aday için `CalcRecipeCost` + dump metrikler hesapla:
+   `sellRevenueDump = NetRevenue(outputBuyPrice) × outputCount` (garanti satış),
+   `profitDump = sellRevenueDump - totalCost`, `buyRisky = profitFloor <= 0 && profitDump > 0`
+6. **Faz 1:** Pre-sort `profitPerOrderDump`, top-200 aday (dedupe outputItemId)
+7. **Faz 2:** Listings çek (1 batch, ≤200 ID) → `StampBook()` her sonuca VWAP + %5 bant.
+   Başarısızsa `m_prevBooks` fallback. `m_stop` kontrolü fetch sonrası.
+8. **Faz 3:** Re-sort `hasVwap ? vwapProfit : profitPerOrderDump` → **top-50'ye kes**.
+   Bu sahte fırsatların (yüksek dump ama sığ kitap) gerçek fırsatları ezmesini engeller.
+9. ResolveNames (top-50), m_scanVolumeIds güncelle, volume stamp.
 
-**DÜZELTME (advisor):**
-1. Ön-filtre flip spread'e bakmaz — craft arbitrage'da output buyPrice irrelevant.
-2. Sıralama profitPerOrder (emir ekonomisi), düz profit değil.
-3. `profitInstant` (anlık alım maliyetiyle) de gösterilir — malzeme buy-order dolmama riski
-   (Radiant tuzağının ingredient tarafı). Satır rengi `profitInstant` işaretine göre.
-4. Sub-recipe çözümleme scanner'da yapılmaz (flat pricing). Reçete Hesaplayıcı recursive kalır.
-5. Likidite göstergesi: mevcut dead-book heuristic (arz > 3× talep) → "SATIŞ RİSKLİ" etiketi.
-   Bu arz/talep proxy'si, ölçülmüş Devir değil — tooltip'te açıkça belirtilir.
-6. Recipe DB indirme yalnızca kullanıcı tetikli (Start'ta auto-download yok, PollOnce ile çakışır).
-7. DownloadAll m_stop ile kesilirse Save yapılmaz — yarım DB ile scan yapmak daha kötü.
-8. Filter(discipline) = vector'da "contains" kontrolü, ilk-eleman eşitliği değil.
+**DÜZELTME (advisor, v0.8.x serisi):**
+1. Ön-filtre: `buyPrice == 0` olan çıktılar elenir — sıfır talep = junk gear (yeşil/mavi düşük seviye).
+2. **Tüm metrikler dump-revenue tabanlı:** `sellRevenueDump = NetRevenue(outputBuyPrice)`.
+   Listing fiyatı (sellPrice) kimsenin almadığı hayal olabilir (Sentinel's Feathered Mantle: %15000 ROI
+   ama 5g'lik listing asla satılmaz). Dump = garanti satış, listing = tooltip'te üst sınır.
+3. **VWAP (v0.8.2+):** Kitabı `orderQty×outputCount` kadar süpürüp gerçek bulk geliri hesaplar.
+   1 adet 60s ama sonraki 249 adet 4s olan durumu yakalar. Sort VWAP'tan sonra yapılır.
+4. **%5 bant (v0.8.4+):** Talep/Arz en iyi fiyatın %5 bandındaki gerçek miktarı gösterir.
+   5000 toplam talep ama 4500'ü 1c lowball → Talep: `500/5K`. Min Talep filtresi bant üzerinden.
+5. **StampBook helper:** VWAP + %5 bant hesabı PollOnce ve DoScan'da ortak kullanılır.
+   DoScan fetch'i başarısızsa `m_prevBooks` fallback.
+6. Sub-recipe çözümleme scanner'da yapılmaz (flat pricing). Reçete Hesaplayıcı recursive kalır.
+7. Recipe DB indirme yalnızca kullanıcı tetikli.
+8. **Durum** 6 seviyeli: ZARAR > SATILMIYOR > SIG DERINLIK > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK.
 
 **Yeni struct'lar (v0.8.9 — güncel):**
 ```cpp
@@ -951,13 +952,16 @@ Bileşenler:
 3. Filtre satırı: Discipline dropdown (Hepsi/Chef/Artificer/...) + Rating aralığı (0-500)
 4. "Tara" butonu → DoScan tetikler
 5. Progress bar (scanning sırasında)
-6. Sonuç tablosu:
-   | Urun | Disiplin | Rating | Maliyet | Satis | **Kar (sabirli)** | **Kar (anlik)** | Kar/Emir | ROI | Durum |
-   - Satır rengi: `profitInstant` > 0 yeşil, <= 0 kırmızı (anlık kâr = gerçekçi alt sınır)
-   - Durum: `sellRisky` = "SATIŞ RİSKLİ" (arz > 3× talep, mevcut dead-book heuristic)
-   - Tooltip: malzeme listesi + arz/talep sayıları ("Bu arz/talep proxy — Devir icin Watchlist'e ekle")
-   - Sıralama: kâr/emir'e göre (varsayılan)
-   - Opsiyonel: "Watchlist'e Ekle" butonu → Devir ölçümü başlar
+6. Sonuç tablosu (13 kolon):
+   | Urun | Disiplin | Rating | Maliyet | Satis | Kar | ROI | Kar/Emir | Talep | Arz | Devir | Durum | + |
+   - **Satis/Kar/ROI/Kar-Emir** VWAP tabanlı (varsa), yoksa dump (turuncu renk uyarısı)
+   - **Talep/Arz** `within5%/toplam` formatında (kitap varsa). Renk: arz/talep oranı (%5 bant)
+   - **Devir** sell-side: satış süresi tahmini (VolumeTracker, PollOnce'da dolur)
+   - **Durum** 6 seviyeli öncelik: ZARAR > SATILMIYOR > SIG DERINLIK > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK
+   - Satır rengi: profitFloor > 0 yeşil, profitDump > 0 sarı, kırmızı
+   - **+ butonu** → Watchlist'e ekle → Devir ölçümü başlar
+   - **Filtreler:** "Talep > Arz" checkbox (%5 bant), "Min Talep" input (%5 bant), bütçe slider
+   - **Filtre diagnostiği:** 0 sonuçta "X filtrelendi: Y bütçe, Z talep>arz, W min-talep"
 7. "Recete Hesaplayici" bölümü aynen kalır (tek item arama)
 
 **Discipline listesi:** `{"", "Armorsmith", "Artificer", "Chef", "Huntsman",
