@@ -1191,6 +1191,7 @@ void AddonRender() {
 
                             int budgetCopper = budgetGold * 10000;
                             int shown = 0;
+                            int filtBudget = 0, filtDemandArs = 0, filtMinDemand = 0;
 
                             // Build filtered + sortable index
                             static std::vector<int> sortedIdx;
@@ -1281,13 +1282,12 @@ void AddonRender() {
 
                                 for (int idx : sortedIdx) {
                                     auto& sr = scanSnap.results[idx];
-                                    // Budget filter
-                                    if (sr.cost.totalCost > budgetCopper) continue;
+                                    if (sr.cost.totalCost > budgetCopper) { filtBudget++; continue; }
                                     {
                                         int rd = sr.hasBook ? sr.buyQtyWithin5 : sr.outputBuyQty;
                                         int rs = sr.hasBook ? sr.sellQtyWithin5 : sr.outputSellQty;
-                                        if (onlyDemandFilter && rd <= rs) continue;
-                                        if (minDemand > 0 && rd < minDemand) continue;
+                                        if (onlyDemandFilter && rd <= rs) { filtDemandArs++; continue; }
+                                        if (minDemand > 0 && rd < minDemand) { filtMinDemand++; continue; }
                                     }
                                     if (shown >= 50) break;
                                     shown++;
@@ -1533,7 +1533,12 @@ void AddonRender() {
                                 ImGui::EndTable();
                             }
                             if (shown == 0 && !scanSnap.results.empty()) {
-                                ImGui::TextDisabled("  Butce (%dg) ile karli recete yok — slider'i artir", budgetGold);
+                                int totalFilt = filtBudget + filtDemandArs + filtMinDemand;
+                                if (totalFilt > 0)
+                                    ImGui::TextDisabled("  %d filtrelendi: %d butce, %d talep>arz, %d min-talep — filtreleri gevset",
+                                        totalFilt, filtBudget, filtDemandArs, filtMinDemand);
+                                else
+                                    ImGui::TextDisabled("  Karli recete yok");
                             }
                         }
                     }
