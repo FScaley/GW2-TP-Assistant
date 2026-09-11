@@ -186,6 +186,7 @@ SalvageResult Evaluate(
         r.verdict = SalvageVerdict::KEEP;
         r.verdictText = "TUT";
         r.note = "Ascended/Legendary: salvage ve vendor onerilmez";
+        r.actionable = false;
         return r;
     }
 
@@ -234,9 +235,14 @@ SalvageResult Evaluate(
             : "Bu tur icin salvage verisi yok";
     }
 
+    bool canTP = !isBound && (r.tpDumpNet > 0 || r.tpListNet > 0);
+    bool canSalvage = p != nullptr || r.salvageUnknown;   // unknown = salvageable but not modeled
+    r.actionable = canTP || canSalvage;
+
     if (info.rarity == "Junk") {
         r.verdict = SalvageVerdict::VENDOR;
         r.verdictText = "VENDOR";
+        r.actionable = false;
         return r;
     }
 

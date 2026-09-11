@@ -43,6 +43,9 @@ struct SalvageResult {
 
     SalvageVerdict verdict = SalvageVerdict::UNKNOWN;
     std::string verdictText;
+    // false when the item can neither be sold on the TP nor salvaged (vendor-only, junk, KEEP):
+    // nothing to decide, so the Canta tab hides it and reports the count.
+    bool actionable = true;
 
     std::string rarity;
     std::string type;

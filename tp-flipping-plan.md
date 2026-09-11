@@ -1238,6 +1238,9 @@ karar   = argmax(vendor, tpDump, salvage)      bilinmeyen salvage argmax'a girme
 - **Exotic:** yalnız ecto 1.25 (`approx`); mat/mote verisi yok, Dark Matter satılamaz.
 - Bound: slot `binding` **veya** `AccountBound` **veya** `SoulbindOnAcquire` (API yazımı — `SoulboundOnAcquire` hiç eşleşmiyordu).
 - `NoSalvage` → profil yok; `Junk` → VENDOR; Trophy özel kuralı kaldırıldı (argmax yeterli — ecto'nun kendisi Trophy).
+- **Gizleme (v0.9.6, kullanıcı isteği):** TP'ye satılamayan **ve** salvage edilemeyen satırlar (sadece-vendor tüketilebilir/araç,
+  junk, TUT) `actionable=false` → `DoInventory` listeden düşürür, özet satırı "N item gizlendi" gösterir. Salvage'ı
+  modellenmemiş ("?") ekipman gizlenmez — salvage edilebilir, sadece değeri bilinmiyor. Toplamlar gizlenenleri içerir.
 
 **Eylül 2026 fiyatlarında pratik sonuç:** Rare Unid Gear → AC+SALVAGE, marj **~2–3s** (yanlış yield'la ~11s görünüyordu);
 level 80 yeşil ekipman → SALVAGE ≈ vendor ± birkaç bakır, eşitlikte salvage (luck bonusu tool'da sayılmıyor);
@@ -1273,11 +1276,11 @@ exotic → alış emri ~23s altında değilse TP SAT.
 
 #### 9f: Testler ve durum
 
-- `test_salvage` **16/16** (formül profilden yeniden hesaplanır, sihirli sayı pinlenmez): sabitler/ID'ler · Rare Unid
+- `test_salvage` **17/17** (formül profilden yeniden hesaplanır, sihirli sayı pinlenmez): sabitler/ID'ler · Rare Unid
   (0.8808, kit 59) · green/blue unid · TP kazanır / salvage kazanır · charm var/yok marjinal kararı çevirir · trinket
   ecto-only · upgrade kapısı (kutu muaf) · tüm mat fiyatı eksik → ? · exotic ecto-only · yeşil ekipman · bound varyantları
   (slot, `AccountBound`, `SoulbindOnAcquire`) · NoSalvage/NoSell · Ascended/Legendary TUT · level 40 ? · ecto yok ? ·
-  Junk · batch.
+  Junk · actionable/gizleme (bound tüketilebilir, araç, NoSalvage, TUT gizli; bound rare ve level-40 yeşil görünür) · batch.
 - `test_inventory`: `/v2/tokeninfo` scope kontrolü + karakter listesi + çanta dump (config.json CWD'de).
 - Release DLL: 0 uyarı. Sürüm 0.9.5 (3 yer). GitHub release v0.9.5, DLL asset.
 

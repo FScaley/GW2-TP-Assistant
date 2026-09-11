@@ -279,8 +279,36 @@ static void TestUnknownStates() {
 static void TestJunk() {
     auto info = MakeItem(99999, "Crumbling Bone", "Junk", "Trophy", 0, 25);
     auto r = Evaluate(info, PriceData{}, g_prices, "");
-    assert(r.verdict == SalvageVerdict::VENDOR);
-    std::cout << "  Junk -> VENDOR PASS\n";
+    assert(r.verdict == SalvageVerdict::VENDOR && !r.actionable);
+    std::cout << "  Junk -> VENDOR (hidden) PASS\n";
+}
+
+static void TestActionable() {
+    std::cout << "  actionable (hide when neither TP nor salvage)...\n";
+    // Bound consumable: vendor only -> hidden
+    auto food = MakeItem(30001, "Bound Food", "Fine", "Consumable", 80, 40);
+    assert(!Evaluate(food, PriceData{}, g_prices, "Account").actionable);
+    // Same item unbound with a TP market -> shown (TP SAT)
+    auto shown = Evaluate(food, MakePrice(food.id, 300, 350), g_prices, "");
+    assert(shown.actionable && shown.verdict == SalvageVerdict::TP_SELL);
+    // Unbound but no TP market and not salvageable (tool) -> hidden
+    auto tool = MakeItem(30002, "Gathering Tool", "Masterwork", "Gathering", 80, 100);
+    assert(!Evaluate(tool, PriceData{}, g_prices, "").actionable);
+    // Bound rare equipment with no TP -> salvageable -> shown
+    auto rare = MakeItem(30003, "Bound Rare", "Rare", "Weapon", 80, 264);
+    assert(Evaluate(rare, PriceData{}, g_prices, "Character").actionable);
+    // Bound level-40 green: salvage unknown but possible -> shown with "?"
+    auto low = MakeItem(30004, "Low Green", "Masterwork", "Armor", 40, 60);
+    auto l = Evaluate(low, PriceData{}, g_prices, "Character");
+    assert(l.actionable && l.salvageUnknown);
+    // Bound NoSalvage equipment, no TP -> hidden
+    ItemInfo ns = MakeItem(30005, "Bound NoSalvage", "Rare", "Weapon", 80, 264);
+    ns.noSalvage = true;
+    assert(!Evaluate(ns, PriceData{}, g_prices, "Account").actionable);
+    // KEEP -> hidden
+    auto asc = MakeItem(30006, "Ascended Ring", "Ascended", "Trinket", 80, 660);
+    assert(!Evaluate(asc, PriceData{}, g_prices, "Account").actionable);
+    std::cout << "    PASS\n";
 }
 
 static void TestBatchEvaluate() {
@@ -319,6 +347,7 @@ int main() {
     TestKeepAscendedLegendary();
     TestUnknownStates();
     TestJunk();
+    TestActionable();
     TestBatchEvaluate();
     std::cout << "\n=== All tests PASSED ===\n";
     return 0;

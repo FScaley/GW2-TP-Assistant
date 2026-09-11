@@ -174,6 +174,7 @@ public:
         bool scanning = false;
         int totalVendor = 0;
         int totalBest = 0;
+        int hidden = 0;         // items dropped from the list: neither TP-sellable nor salvageable
         std::string error;      // non-empty on failure (shown in UI)
     };
     InventorySnapshot GetInventorySnapshot() const;

@@ -1153,8 +1153,15 @@ void Worker::DoInventory() {
         totalBest += r.bestValue() * r.count;
     }
 
+    // Vendor-only / junk / KEEP rows carry no decision — drop them, keep the count visible.
+    int hidden = 0;
+    results.erase(std::remove_if(results.begin(), results.end(),
+        [&hidden](const SalvageResult& r) { if (!r.actionable) { hidden++; return true; } return false; }),
+        results.end());
+
     InventorySnapshot snap;
     snap.items = std::move(results);
+    snap.hidden = hidden;
     snap.characterName = charName;
     snap.lastRefresh = std::chrono::steady_clock::now();
     snap.hasData = true;

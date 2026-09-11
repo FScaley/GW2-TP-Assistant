@@ -53,7 +53,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 5;
+    AddonDef.Version.Build = 6;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -116,7 +116,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.5 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.6 loaded.");
 }
 
 void AddonUnload() {
@@ -1594,6 +1594,12 @@ void AddonRender() {
                         ProfitEngine::FormatCopper(invSnap.totalVendor).c_str(),
                         ProfitEngine::FormatCopper(invSnap.totalBest).c_str(),
                         ProfitEngine::FormatCopper(invSnap.totalBest - invSnap.totalVendor).c_str());
+                    if (invSnap.hidden > 0) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("| %d item gizlendi", invSnap.hidden);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("TP'ye satilamayan ve salvage edilemeyen itemler\n(sadece vendor, junk, Ascended/Legendary) listelenmez.");
+                    }
                     ImGui::Separator();
 
                     // Filter buttons
@@ -1725,6 +1731,8 @@ void AddonRender() {
 
                         ImGui::EndTable();
                     }
+                } else if (invSnap.hasData && invSnap.items.empty() && invSnap.hidden > 0) {
+                    ImGui::TextDisabled("Cantada karar gerektiren item yok (%d item gizlendi: TP/salvage yok).", invSnap.hidden);
                 } else if (!invSnap.hasData && !invSnap.scanning) {
                     ImGui::TextDisabled("Taramak icin 'Tara' butonuna basin.");
                     ImGui::TextDisabled("API key'de 'inventories' + 'characters' scope gerekli.");
@@ -1741,7 +1749,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.9.5");
+    ImGui::Text("TP Assistant v0.9.6");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

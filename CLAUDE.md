@@ -118,7 +118,7 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
    - **Durum** priority: ZARAR > SATILMIYOR > SIG DERINLIK > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK.
    - **Filters**: "Talep > Arz" checkbox (within-5% band), "Min Talep" input (within-5% band), budget slider. Filter diagnostic shows what was excluded when 0 results.
    - **+ button** adds the output item to the watchlist for full Devir tracking.
-5. **Canta** — Active character's bag (MumbleLink identity → `/v2/characters/:name/inventory`, needs `inventories` + `characters` scopes). Columns: Item, Adet, Rarity, Vendor, TP(net), Salvage, Karar. Karar: VENDOR / TP SAT / SALVAGE / AC+SALVAGE (identify first) / TUT; a trailing `?` means salvage value unknown. Tooltips show the salvage breakdown (ecto + mats − kit) and the non-guaranteed TP listing value.
+5. **Canta** — Active character's bag (MumbleLink identity → `/v2/characters/:name/inventory`, needs `inventories` + `characters` scopes). Columns: Item, Adet, Rarity, Vendor, TP(net), Salvage, Karar. Karar: VENDOR / TP SAT / SALVAGE / AC+SALVAGE (identify first); a trailing `?` means salvage value unknown. Rows that can neither be sold on the TP nor salvaged (vendor-only consumables/tools, junk, Ascended/Legendary KEEP) are dropped by `DoInventory` (`SalvageResult::actionable == false`) and reported as "N item gizlendi". Tooltips show the salvage breakdown (ecto + mats − kit) and the non-guaranteed TP listing value.
 
 ### Crafting Scanner Pipeline (DoScan)
 
@@ -149,7 +149,7 @@ Per bag item, three options are valued in copper per unit and the argmax wins:
 - `tpDumpNet = NetRevenue(buy)` — dump into buy orders (guaranteed; project convention). 0 when bound (slot `binding`, `AccountBound`, or `SoulbindOnAcquire`). `tpListNet = NetRevenue(sell−1)` is tooltip-only, never a verdict.
 - `salvageEv = ectoYield×ectoNet + Σ rate×matNet − kitCost×kitUses`, from a `SalvageProfile` chosen by `SelectProfile(info)`.
 
-**Hard rules, in order:** `Ascended`/`Legendary` → `KEEP` ("TUT") before anything else. `NoSalvage` → no profile. `Junk` → VENDOR. `salvageUnknown` (shown as `?`, excluded from `bestValue()` and totals) whenever the salvage value cannot be computed honestly: ecto price missing for an ecto profile, every material price missing for a mat-only profile, equipment below level 68, or an equipment type with no research data (green trinkets). A confident VENDOR/TP SAT must never come from a missing number.
+**Hard rules, in order:** `Ascended`/`Legendary` → `KEEP` ("TUT") before anything else. `NoSalvage` → no profile. `Junk` → VENDOR. `salvageUnknown` (shown as `?`, excluded from `bestValue()` and totals) whenever the salvage value cannot be computed honestly: ecto price missing for an ecto profile, every material price missing for a mat-only profile, equipment below level 68, or an equipment type with no research data (green trinkets). A confident VENDOR/TP SAT must never come from a missing number. `actionable = canTP || profile || salvageUnknown` — when false (vendor-only, junk, KEEP) the row is hidden from the tab; totals still include it.
 
 **Profiles** (all rates hand-computed from raw wiki `{{SDRL}}` rows, 11 Sep 2026 — see `SalvageCalc.cpp` comments for the exact totals):
 | Item | Profile | Ecto | Mats | Kit |
