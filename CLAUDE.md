@@ -59,7 +59,7 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
   - `GW2ApiClient` — All GW2 API endpoint wrappers (prices, listings, transactions, recipes, items). Handles 206 Partial Content, batch ≤200 IDs per request.
   - `ProfitEngine` — Tax math (5% listing + 10% exchange = 15% total), flip/relist calculations. Header-mostly with `FormatCopper()` in .cpp.
   - `ConfigManager` — JSON config (API key, watchlist, poll interval, position capital). Dir: Nexus addon data path.
-  - `Worker` — Background thread: poll cycle, manages all module operations, owns all snapshots behind `m_snapshotMutex`. Entry point is `Run()` → `PollOnce()` loop + on-demand `DoPnL`/`DoOrders`/`DoCrafting`/`DoScan`.
+  - `Worker` — Background thread: poll cycle, manages all module operations, owns all snapshots behind `m_snapshotMutex`. Entry point is `Run()` → `PollOnce()` loop + on-demand `DoPnL`/`DoOrders`/`DoCrafting`/`DoScan`. `StampBook()` helper stamps VWAP + within-5% band onto `ScanResult` from order book data — called from both `PollOnce` and `DoScan`.
   - `BookAnalyzer` — Pure header-only: order book depth analysis (thin book detection, VWAP instant flip, queue stats).
 - **`src/modules/`** — Domain logic (all pure/testable, no HTTP):
   - `PnLTracker` — FIFO cost matching from transaction history, per-item P&L with ignore toggle
@@ -71,6 +71,7 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
 ### Key Patterns
 
 - **Snapshot pattern:** Worker writes full snapshot structs (`WatchlistSnapshot`, `PnLSummary`, `OrdersSnapshot`, `CraftingSnapshot`, `ScanSnapshot`) under mutex. Render copies them. Never pass pointers across threads.
+- **Scan volume tracking:** `m_scanVolumeIds` (worker-only) holds output item IDs from the last scan. `PollOnce` merges these with watchlist IDs for `GetListings` calls, enabling VolumeTracker + VWAP for scan outputs without adding them to the watchlist.
 - **Carry-forward on API failure:** If an API call fails, the previous snapshot data is kept with a `stale` flag — never clear data on errors.
 - **First-poll silence:** Alerts seed existing state on first poll without firing notifications, so addon startup doesn't spam.
 - **Alert dedup:** Keyed by (item, price) for outbid/undercut. State resets when condition clears.
@@ -100,6 +101,30 @@ Test files: `test_harness` (core integration), `test_pnl`, `test_book`, `test_vo
 2. **Kar/Zarar** — P&L from transaction history with FIFO matching. "Sadece alsat" filter.
 3. **Emirlerim** — Open buy orders + sell listings vs market. Recent fills/sales log. Rebid/relist analysis.
 4. **Crafting** — Time-gated daily crafts (tier-1→tier-2 chains) + custom recipe calculator + crafting arbitrage scanner.
+   - **Scanner table** (13 columns): Urun, Disiplin, Rating, Maliyet, Satis, Kar, ROI, Kar/Emir, Talep, Arz, Devir, Durum, +. All profit metrics use **dump revenue** (sell into buy orders = guaranteed sale), not listing price fiction. When VWAP (order book depth sweep) is available, it replaces the 1-unit dump price.
+   - **Talep/Arz** show `within5%/total` format (e.g. `433/955`): real demand near market price vs total (includes lowball orders).
+   - **Devir** — sell-side only (craft then sell): VolumeTracker measured sell hours. Three states: `--` (collecting), `SATILMIYOR` (measured zero), time estimate.
+   - **Durum** priority: ZARAR > SATILMIYOR > SIG DERINLIK > INCE PIYASA > ALIM RISKLI > SATIS RISKLI > OK.
+   - **Filters**: "Talep > Arz" checkbox (within-5% band), "Min Talep" input (within-5% band), budget slider. Filter diagnostic shows what was excluded when 0 results.
+   - **+ button** adds the output item to the watchlist for full Devir tracking.
+
+### Crafting Scanner Pipeline (DoScan)
+
+Three-phase flow that ensures VWAP-honest ranking before truncation:
+
+1. **Pre-sort** by `profitPerOrderDump` (1-unit dump price), keep top-200 candidates (deduplicated by outputItemId).
+2. **Fetch listings** for ≤200 IDs (1 batch `GetListings` call) → `StampBook()` each result with VWAP + within-5% band. Falls back to `m_prevBooks` if the fetch fails.
+3. **Re-sort** by `hasVwap ? vwapProfit : profitPerOrderDump`, then **truncate to top-50**. This prevents fiction items (high dump price but shallow book) from displacing real opportunities.
+
+After truncation: `ResolveNames` for the 50, set `m_scanVolumeIds`, stamp volume estimates.
+
+**ScanResult metrics** (all in `Worker.h`):
+- `sellRevenueDump` / `profitDump` / `roiDump` — sell output into best buy order (1-unit price). Pre-VWAP headline.
+- `profitFloor` — `sellRevenueDump − totalCostInstant` (fully guaranteed worst case).
+- `vwapSellRev` / `vwapProfit` — sweep buy-side book for `orderQty × outputCount` units. Per-order total (divide by `orderQty` for per-craft display).
+- `buyQtyWithin5` / `sellQtyWithin5` — demand/supply within 5% of best price (real depth, filters lowball).
+- `buyRisky` — `profitFloor ≤ 0 && profitDump > 0` (ingredient buy orders may not fill).
+- `thinMarket` — `outputSellQty < 10 || outputBuyQty < 10`.
 
 ### Emir Ekonomisi (Order Economics)
 

@@ -897,31 +897,37 @@ Compact array format — JSON objeleri 12K recipe'de 5+ MB olur, array format ~2
 7. DownloadAll m_stop ile kesilirse Save yapılmaz — yarım DB ile scan yapmak daha kötü.
 8. Filter(discipline) = vector'da "contains" kontrolü, ilk-eleman eşitliği değil.
 
-**Yeni struct'lar:**
+**Yeni struct'lar (v0.8.9 — güncel):**
 ```cpp
 struct ScanResult {
-    CostBreakdown cost;       // mevcut struct — totalCost, totalCostInstant, profit, profitInstant, roi
-    // Emir ekonomisi (Faz 1 metriği)
+    CostBreakdown cost;       // totalCost, totalCostInstant, sellRevenue (listing), profit, profitInstant, roi
     int orderQty = 0;         // min(250, positionCapital / totalCost)
-    int profitPerOrder = 0;   // profit * orderQty (sabırlı)
-    int profitPerOrderInstant = 0; // profitInstant * orderQty (anlık)
-    // Output likidite göstergesi (/v2/commerce/prices'tan)
-    int outputBuyQty = 0;     // TP'deki talep (buy order adedi)
-    int outputSellQty = 0;    // TP'deki arz (sell listing adedi)
-    bool sellRisky = false;   // arz > 3× talep → satış tarafı ölü olabilir
-};
-
-// CraftingSnapshot'a eklenir:
-struct ScanSnapshot {
-    std::vector<ScanResult> results;     // kâra göre sıralı
-    std::string discipline;              // taranan disiplin
-    int maxRating = 0;
-    int recipesScanned = 0;              // toplam taranan
-    int profitable = 0;                  // kârlı olan
-    std::chrono::steady_clock::time_point timestamp;
-    bool hasData = false;
-    bool scanning = false;               // progress göstergesi için
-    float progress = 0.0f;              // 0.0-1.0
+    int profitPerOrder = 0;   // profit * orderQty (listing tabanlı — üst sınır)
+    // Dump metrikler: çıktıyı buy-order'lara sat (garanti satış, listing hayali değil)
+    int sellRevenueDump = 0;  // NetRevenue(outputBuyPrice) * outputCount
+    int profitDump = 0;       // sellRevenueDump - totalCost (sabırlı malzeme + dump)
+    int profitFloor = 0;      // sellRevenueDump - totalCostInstant (tam garanti taban)
+    double roiDump = 0;
+    int profitPerOrderDump = 0; // profitDump * orderQty — ön-sıralama metriği
+    int outputBuyPrice = 0;   // en iyi buy-order fiyatı
+    int outputBuyQty = 0;     // toplam talep
+    int outputSellQty = 0;    // toplam arz
+    bool sellRisky = false;   // arz > 3× talep && talep < 1000
+    bool buyRisky = false;    // profitFloor <= 0 && profitDump > 0 (malzeme emri dolmaz)
+    bool thinMarket = false;  // outputSellQty < 10 || outputBuyQty < 10
+    // Kitap derinliği (listings'den — DoScan fetch veya PollOnce)
+    bool hasBook = false;
+    int buyQtyWithin5 = 0;    // en iyi fiyatın %5 bandındaki gerçek talep
+    int sellQtyWithin5 = 0;   // en iyi fiyatın %5 bandındaki gerçek arz
+    // VWAP: kitabı orderQty×outputCount kadar süpür → gerçek bulk gelir
+    int vwapSellRev = 0;      // toplam gelir (vergi sonrası)
+    int vwapProfit = 0;       // vwapSellRev - totalCost * orderQty (emir toplamı)
+    bool vwapCovers = false;  // kitap yeterli mi
+    bool hasVwap = false;     // listings verisi var mı
+    // Hacim (VolumeTracker, PollOnce'da dolur)
+    VolumeEstimate vol;
+    double sellHours = 0;     // (orderQty * outputCount) / saatlik satılan
+    double sharePct = 0;      // piyasa payı %
 };
 ```
 
@@ -974,8 +980,167 @@ Bileşenler:
 
 **Regresyon:** test_crafting (9), test_book (6), test_volume (13), test_orders (10), test_pnl (6).
 
-- [ ] RecipeDatabase (Load/Save/DownloadAll/Filter) + test_recipe_db
-- [ ] Worker: DoRecipeDownload, DoScan, ScanSnapshot, RequestScan
-- [ ] UI: Recipe DB durum + Indir + Filtre + Tara + sonuç tablosu; sürüm 0.7
-- [ ] test_worker [7c, 7d]
+- [x] RecipeDatabase (Load/Save/DownloadAll/Filter) + test_recipe_db
+- [x] Worker: DoRecipeDownload, DoScan, ScanSnapshot, RequestScan
+- [x] UI: Recipe DB durum + Indir + Filtre + Tara + sonuç tablosu; sürüm 0.7
+- [x] test_worker [7c, 7d]
 - [ ] Oyun içi: Chef 0-400 tara, kârlı recipe bul, craft et, sat
+
+### Faz 8: Crafting Tarayıcı Likidite Analizi ✅ (v0.8.0 → v0.8.9, 11 Eyl 2026)
+
+**Motivasyon:** Faz 7 tarayıcısı yüksek ROI gösteren ürünler buluyordu (%15.000 ROI gibi) ama bunların
+gerçekten satılabilir olup olmadığını söyleyemiyordu. Üç temel sorun:
+1. **Hayali satış fiyatı:** `sellRevenue` TP'deki en düşük satış listesinden (ask) hesaplanıyordu — kimsenin
+   almadığı 5g'lik listing. Gerçek gelir = buy-order'lara dump.
+2. **Likidite göstergesi yetersiz:** Sadece `arz > 3× talep` heuristic'i vardı, gerçek hacim ölçümü yoktu.
+3. **Talep sayısı yanıltıcı:** 5.000 toplam buy-order'ın 4.500'ü 1 copper lowball olabiliyor.
+
+**Yapılan değişiklikler (advisor-reviewed):**
+
+#### 8a: Talep/Arz/Devir Kolonları + Watchlist Butonu (v0.8.0)
+
+- `ScanResult`'a `VolumeEstimate vol`, `sellHours`, `sharePct` eklendi
+- `Worker::m_scanVolumeIds`: scan çıktılarının outputItemId'leri PollOnce döngüsüne dahil
+- PollOnce'da listings fetch watchlist + scan ID'leri kapsar (`volIds`)
+- Volume stamping: her poll'da scan sonuçlarına satış süresi tahmini yazılır
+- **Talep/Arz kolonları** sıralanabilir, arz/talep oranına göre renk kodlu
+- **Devir kolonu**: üç durum — `--` (veri topluyor), `SATILMIYOR` (ölçülen sıfır), `~X sa` (tahmin)
+- **Watchlist'e Ekle (+) butonu**: scan satırından tek tıkla ekleme
+- **"Talep > Arz" filtre checkbox'ı**
+- Akıllı **Durum** kolonu (6 seviye): ZARAR > SATILMIYOR > İNCE PİYASA > ALIM RİSKLİ > SATIŞ RİSKLİ > OK
+- İNCE PİYASA: arz veya talep < 10 (fiyat güvensiz)
+- ALIM RİSKLİ: anlık kâr ≤ 0, sabırlı kâr > 0 (malzeme buy-order dolmaz)
+- Always-sort: Devir poll'da mutasyona uğradığı için SpecsDirty beklenmez
+
+#### 8b: Dump-Revenue Tabanlı Metrikler (v0.8.1)
+
+**Kök sorun:** `sellRevenue = NetRevenue(sellPrice)` — kimsenin almadığı listing fiyatı.
+Sentinel's Feathered Mantle: 17 adet 5g listing var ama buy-order'lar 1 copper.
+
+**Çözüm:** Tüm gelir/kâr/ROI metrikleri artık `outputBuyPrice` üzerinden (buy-order'lara dump):
+```cpp
+sellRevenueDump = NetRevenue(outputBuyPrice) * outputCount;
+profitDump      = sellRevenueDump - totalCost;
+profitFloor     = sellRevenueDump - totalCostInstant;  // garanti taban
+roiDump         = profitDump * 100.0 / totalCost;
+```
+- Pre-filter: `buyPrice == 0` olan ürünler elenir (sıfır talep = junk gear)
+- Sort/truncate `profitPerOrderDump` üzerinden
+- Listing metrikler tooltip'e taşındı
+- İsim rengi: yeşil = `profitFloor > 0` (garanti kârlı), sarı = sadece `profitDump > 0`, kırmızı = zarar
+- `buyRisky` yeniden tanım: `profitFloor ≤ 0 && profitDump > 0`
+
+#### 8c: VWAP Bulk Satış Hesabı (v0.8.2 → v0.8.5 bugfix)
+
+**Sorun:** En iyi buy-order fiyatı 1 adet için geçerli. 250 adet dump'ta ikinci alıcı çok daha düşük
+fiyatta olabilir (60s → 4s cliff).
+
+**Çözüm:** `BookAnalyzer` mantığıyla buy-side kitabı `orderQty × outputCount` kadar sweep:
+```cpp
+void Worker::StampBook(ScanResult& sr, const vector<BookLevel>& buys, const vector<BookLevel>& sells);
+```
+- `vwapSellRev`: toplam gelir (vergi sonrası), kitaptan süpürülerek
+- `vwapProfit = vwapSellRev - totalCost * orderQty` (per-order toplam, birim hatası v0.8.5'te düzeltildi)
+- `vwapCovers`: kitap derinliği miktarı karşılıyor mu
+- Satis/Kar/ROI kolonları VWAP per-craft gösterir, Kar/Emir order toplamı
+- **SIĞ DERİNLİK** durumu: kitap ürünü karşılayamıyorsa
+
+**StampBook çağrı noktaları:**
+- PollOnce: fresh listings'ten (her 5dk)
+- DoScan: listings fetch'ten (top-200 aday için, 1 batch call) + `m_prevBooks` fallback
+
+**v0.8.5 bugfix'leri (advisor bulgusu):**
+1. `buyQtyWithin5` / `sellQtyWithin5` her poll'da += ile birikiyordu → sıfırlama eklendi
+2. `vwapProfit = rev - totalCost` (1 craft maliyeti) olması gereken `rev - totalCost * orderQty` idi
+
+#### 8d: %5 Bant Derinliği (v0.8.4)
+
+**Sorun:** Talep 5.000 görünüyor ama 4.500'ü 1 copper lowball. Toplam sayı yanıltıcı.
+
+**Çözüm:** `buyQtyWithin5` / `sellQtyWithin5` — en iyi fiyatın %5 bandındaki gerçek miktar.
+BookAnalyzer'daki mevcut mantık (GW2BLTC standardı) scan'a entegre edildi.
+- Talep kolonu: `433/955` formatı (banttaki / toplam)
+- Arz kolonu: aynı format, renk oranı %5 bant üzerinden
+- Min Talep filtresi %5 bant üzerinden çalışır
+- "Talep > Arz" filtresi %5 bant üzerinden karşılaştırır
+- Yoğunluk yüzdesi tooltip'te
+
+#### 8e: VWAP-First Sıralama (v0.8.7 → v0.8.8)
+
+**Sorun:** Sort/truncate (top-50) VWAP'tan *önce* yapılıyordu. Dump fiyatıyla yüksek görünen
+sahte fırsatlar (Feast of Sage: dump +34s, VWAP -15s) top-50'ye giriyor, gerçek fırsatları eliyordu.
+
+**Çözüm — 3 fazlı akış:**
+1. Pre-sort `profitPerOrderDump` → top-200 aday (dedupe `outputItemId`)
+2. `GetListings` (1 batch, ≤200 ID) → `StampBook` her aday için. Fetch başarısızsa `m_prevBooks` fallback.
+3. Re-sort `hasVwap ? vwapProfit : profitPerOrderDump` → top-50'ye kes
+
+`m_stop` check listings sonrası (addon unload hızı için).
+
+#### 8f: Filtre Diagnostiği + Min Talep (v0.8.3, v0.8.9)
+
+- **Min Talep** input alanı: InputInt ile 0-100K+ ayarlanabilir (oklara tıkla: 1K, Ctrl: 5K)
+- 0 sonuç durumunda: `"50 filtrelendi: 3 butce, 45 talep>arz, 2 min-talep"` diagnostik satırı
+- Kullanıcı hangi filtreyi gevşetmesi gerektiğini görür
+
+#### Advisor bulguları ve düzeltmeler
+
+| Versiyon | Bulgu | Düzeltme |
+|----------|-------|----------|
+| v0.8.0 | Devir her "Tara"da sıfırlanıyor | DoScan'da `m_volume.Estimate` stamp'le |
+| v0.8.0 | Sort SpecsDirty bekliyor, Devir stale | Always-sort (her frame) |
+| v0.8.0 | Türkçe `ı` (U+0131) font'ta yok | ASCII-only: `toplaniyor`, `craftlamaya` |
+| v0.8.0 | `m_firstPoll` scan-only poll'da clear | `if (!watchlist.empty())` guard |
+| v0.8.2 | VWAP birim hatası (per-craft vs per-order) | `vwapProfit = rev - totalCost * orderQty` |
+| v0.8.4 | within5 birikim hatası (+= sıfırlanmıyor) | StampBook'ta sıfırlama |
+| v0.8.7 | m_prevBooks fallback silindi | fetch fail → m_prevBooks fallback restore |
+| v0.8.7 | Sort/truncate VWAP'tan önce | 3 fazlı akış: pre-sort → VWAP → re-sort |
+
+#### Mevcut ScanResult struct'ı (v0.8.9)
+
+```cpp
+struct ScanResult {
+    CostBreakdown cost;
+    int orderQty = 0;
+    int profitPerOrder = 0;          // listing-based (tooltip)
+    int profitPerOrderInstant = 0;
+    // Dump: sell into buy orders
+    int sellRevenueDump = 0;         // NetRevenue(outputBuyPrice) * outputCount
+    int profitDump = 0;              // sellRevenueDump - totalCost
+    int profitFloor = 0;             // sellRevenueDump - totalCostInstant
+    double roiDump = 0;
+    int profitPerOrderDump = 0;      // profitDump * orderQty
+    int outputBuyPrice = 0;
+    int outputBuyQty = 0;
+    int outputSellQty = 0;
+    bool sellRisky = false;
+    bool buyRisky = false;           // profitFloor <= 0 && profitDump > 0
+    bool thinMarket = false;         // outputSellQty < 10 || outputBuyQty < 10
+    bool wideSpread = false;         // sellPrice > 3× buyPrice
+    // Book depth (from PollOnce/DoScan listings)
+    bool hasBook = false;
+    int buyQtyWithin5 = 0;           // %5 band demand
+    int sellQtyWithin5 = 0;          // %5 band supply
+    // VWAP bulk dump
+    int vwapSellRev = 0;
+    int vwapProfit = 0;              // vwapSellRev - totalCost * orderQty
+    bool vwapCovers = false;
+    bool hasVwap = false;
+    // Volume (from VolumeTracker)
+    VolumeEstimate vol;
+    double sellHours = 0;
+    double sharePct = 0;
+};
+```
+
+#### Bilinen sınırlamalar
+
+1. **Flat pricing:** Tarayıcı alt-reçeteleri açmıyor. "Bu malzemeyi de craftlasam daha ucuz" sorusu
+   tarayıcıda cevaplanmıyor (custom hesaplayıcı recursive, tarayıcı değil).
+2. **200 ladder fetch:** İlk "Hepsi" taramasında 200 full order book çekilir. WinHTTP 10s timeout'ta
+   rate limit veya büyük yanıt sorunlu olabilir — tüm liste turuncu kalırsa batch boyutunu 150'ye düşür.
+3. **profitableCount dump-based ama top-50 öncesi:** "1145 karlı" header'ı dump profit'e göre sayar,
+   tablo VWAP sonrası gösterir. Sayılar uyuşmayabilir — beklenen davranış.
+4. **%5 bant tek outlier'da yanıltıcı:** 1@60s + 4999@40s → "1/5K" gösterir ama 40s da kârlı olabilir.
+   VWAP geliri doğru hesaplar, bant kalite göstergesidir gelir değil.
+5. **Devir en az 2 saat veri gerektirir.** Addon kapalıyken veri toplanmaz.
