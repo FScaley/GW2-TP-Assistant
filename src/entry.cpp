@@ -23,9 +23,9 @@ void AddonRender();
 void AddonOptions();
 
 static constexpr int VER_MAJOR = 0;
-static constexpr int VER_MINOR = 9;
-static constexpr int VER_BUILD = 9;
-#define VER_STR "0.9.9"
+static constexpr int VER_MINOR = 10;
+static constexpr int VER_BUILD = 0;
+#define VER_STR "0.10.0"
 
 AddonDefinition_t AddonDef = {};
 HMODULE hSelf = nullptr;
