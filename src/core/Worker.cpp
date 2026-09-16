@@ -1230,6 +1230,54 @@ void Worker::DoInventory(const std::wstring& rawIdentity) {
     }
 }
 
+// GW2 crafting material tier classification (IDs stable since 2012 launch)
+static int GetMaterialTier(int id) {
+    switch (id) {
+        // Metal: ore + ingot
+        case 19697: case 19680: return 1;  // Copper
+        case 19699: case 19683: return 2;  // Iron
+        case 19698: case 19682: return 3;  // Gold
+        case 19700: case 19687: return 3;  // Silver
+        case 19702: case 19686: return 4;  // Platinum
+        case 19701: case 19684: return 5;  // Mithril
+        case 19703: case 19685: return 6;  // Orichalcum
+        // Cloth: scrap + bolt
+        case 19718: case 19720: return 1;  // Jute
+        case 19739: case 19740: return 2;  // Wool
+        case 19741: case 19742: return 3;  // Cotton
+        case 19743: case 19744: return 4;  // Linen
+        case 19748: case 19747: return 5;  // Silk
+        case 19745: case 19746: return 6;  // Gossamer
+        // Leather: section + cured
+        case 19719: case 19738: return 1;  // Rawhide
+        case 19728: case 19733: return 2;  // Thin
+        case 19730: case 19734: return 3;  // Coarse
+        case 19731: case 19736: return 4;  // Rugged
+        case 19729: case 19735: return 5;  // Thick
+        case 19732: case 19737: return 6;  // Hardened
+        // Wood: log + plank
+        case 19723: case 19710: return 1;  // Green
+        case 19726: case 19713: return 2;  // Soft
+        case 19727: case 19714: return 3;  // Seasoned
+        case 19724: case 19711: return 4;  // Hard
+        case 19722: case 19709: return 5;  // Elder
+        case 19725: case 19712: return 6;  // Ancient
+    }
+    // Fine: Dust T1-T6 (sequential)
+    if (id >= 24276 && id <= 24281) return id - 24275;
+    // Fine: Blood T1-T6
+    if (id >= 24290 && id <= 24295) return id - 24289;
+    // Fine: Totems T1-T6
+    if (id >= 24296 && id <= 24301) return id - 24295;
+    // Fine: Bones T1-T6
+    if (id >= 24340 && id <= 24345) return id - 24339;
+    // Fine: Claws T1-T6
+    if (id >= 24347 && id <= 24352) return id - 24346;
+    // Fine: Fangs T1-T6
+    if (id >= 24354 && id <= 24359) return id - 24353;
+    return 0;
+}
+
 void Worker::DoMaterials() {
     if (!m_api->HasApiKey()) return;
 
@@ -1303,6 +1351,7 @@ void Worker::DoMaterials() {
         me.listNet = me.sellPrice > 1 ? ProfitEngine::NetRevenue(me.sellPrice - 1) : 0;
         me.totalDump = me.count * me.dumpNet;
         me.totalList = me.count * me.listNet;
+        me.tier = GetMaterialTier(s.itemId);
         entries.push_back(me);
     }
 

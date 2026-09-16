@@ -24,8 +24,8 @@ void AddonOptions();
 
 static constexpr int VER_MAJOR = 0;
 static constexpr int VER_MINOR = 10;
-static constexpr int VER_BUILD = 0;
-#define VER_STR "0.10.0"
+static constexpr int VER_BUILD = 1;
+#define VER_STR "0.10.1"
 
 AddonDefinition_t AddonDef = {};
 HMODULE hSelf = nullptr;
@@ -1801,6 +1801,19 @@ void AddonRender() {
                         ImGui::SetNextItemWidth(80);
                         ImGui::SliderInt("Goster", &matShowCount, 5, 50);
 
+                        // Tier filter
+                        static bool tierFilter[7] = { true, true, true, true, true, true, true }; // [0]=hepsi/diger, [1-6]=T1-T6
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("|");
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Hepsi##tf", &tierFilter[0]);
+                        for (int t = 1; t <= 6; t++) {
+                            ImGui::SameLine();
+                            char label[16];
+                            snprintf(label, sizeof(label), "T%d", t);
+                            ImGui::Checkbox(label, &tierFilter[t]);
+                        }
+
                         if (ImGui::BeginTable("##matstore", 7,
                                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                 ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable |
@@ -1838,14 +1851,23 @@ void AddonRender() {
                             int shown = 0;
                             for (auto& e : sorted) {
                                 if (shown >= matShowCount) break;
+                                // Tier filter: tier 0 uses slot [0] ("Hepsi/diger"), tiers 1-6 use their slot
+                                if (!tierFilter[e.tier]) continue;
                                 shown++;
 
                                 ImGui::TableNextRow();
                                 ImGui::PushID(e.itemId);
 
                                 ImGui::TableNextColumn();
-                                CopyableName(e.name.empty() ? ("#" + std::to_string(e.itemId)) : e.name,
-                                    ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                                {
+                                    std::string display = e.name.empty() ? ("#" + std::to_string(e.itemId)) : e.name;
+                                    if (e.tier > 0) {
+                                        char tierTag[8];
+                                        snprintf(tierTag, sizeof(tierTag), " (T%d)", e.tier);
+                                        display += tierTag;
+                                    }
+                                    CopyableName(display, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                                }
 
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%d", e.count);

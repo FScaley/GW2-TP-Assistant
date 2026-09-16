@@ -193,6 +193,7 @@ public:
         int listNet = 0;       // NetRevenue(sellPrice-1) per unit
         int totalDump = 0;     // count * dumpNet
         int totalList = 0;     // count * listNet
+        int tier = 0;          // 0=unknown, 1-6 = crafting material tier
     };
     struct MaterialSnapshot {
         std::vector<MaterialEntry> entries;  // sorted by totalDump descending
