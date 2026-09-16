@@ -128,6 +128,28 @@ std::vector<ItemInfo> GW2ApiClient::GetItems(const std::vector<int>& itemIds) {
     return result;
 }
 
+std::vector<GW2ApiClient::MaterialSlot> GW2ApiClient::GetMaterialStorage() {
+    std::vector<MaterialSlot> result;
+    if (m_apiKey.empty()) { m_lastOk = false; return result; }
+    auto resp = m_http.Get(API_HOST, "/v2/account/materials?access_token=" + m_apiKey);
+    if (!resp || resp->statusCode != 200) { m_lastOk = false; return result; }
+    m_lastOk = true;
+    try {
+        auto j = json::parse(resp->body);
+        for (auto& item : j) {
+            int count = item.value("count", 0);
+            if (count <= 0) continue;
+            MaterialSlot ms;
+            ms.itemId = item["id"].get<int>();
+            ms.count = count;
+            ms.category = item.value("category", 0);
+            ms.binding = item.value("binding", "");
+            result.push_back(ms);
+        }
+    } catch (...) { m_lastOk = false; }
+    return result;
+}
+
 std::vector<std::string> GW2ApiClient::GetCharacterNames() {
     std::vector<std::string> result;
     if (m_apiKey.empty()) { m_lastOk = false; return result; }

@@ -69,6 +69,15 @@ public:
     std::vector<int> SearchRecipeByInput(int inputItemId);           // recipes consuming this item
     std::vector<RecipeData> GetRecipes(const std::vector<int>& recipeIds);  // up to 200
 
+    // Material storage (auth required: account + inventories scopes)
+    struct MaterialSlot {
+        int itemId = 0;
+        int count = 0;
+        int category = 0;
+        std::string binding;  // "" (tradeable), "Account"
+    };
+    std::vector<MaterialSlot> GetMaterialStorage();
+
     // Inventory endpoints (auth required: characters + inventories scopes)
     struct InventorySlot {
         int itemId = 0;

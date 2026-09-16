@@ -47,6 +47,8 @@ void Worker::Start(GW2ApiClient* api, ConfigManager* config, const std::string& 
     m_inventoryLastChar.clear();
     m_inventoryLastFp.clear();
     m_inventorySnapshot = InventorySnapshot{};
+    m_materialsRequested = false;
+    m_materialSnapshot = MaterialSnapshot{};
 
     m_thread = std::thread(&Worker::Run, this);
 }
@@ -113,6 +115,16 @@ void Worker::RequestInventory(const std::wstring& rawIdentity) {
     m_cv.notify_one();
 }
 
+Worker::MaterialSnapshot Worker::GetMaterialSnapshot() const {
+    std::lock_guard<std::mutex> lock(m_snapshotMutex);
+    return m_materialSnapshot;
+}
+
+void Worker::RequestMaterials() {
+    { std::lock_guard<std::mutex> lk(m_cvMutex); m_materialsRequested = true; }
+    m_cv.notify_one();
+}
+
 
 void Worker::RequestCraftingSearch(int outputItemId) {
     { std::lock_guard<std::mutex> lk(m_cvMutex); m_craftingSearchId = outputItemId; m_craftingRequested = true; }
@@ -158,7 +170,8 @@ void Worker::Run() {
             [this] { return m_stop.load() || m_forcePoll.load()
                      || m_pnlRequested.load() || m_ordersRequested.load()
                      || m_craftingRequested.load() || m_downloadRequested.load()
-                     || m_scanRequested.load() || m_inventoryRequested.load(); });
+                     || m_scanRequested.load() || m_inventoryRequested.load()
+                     || m_materialsRequested.load(); });
 
         if (m_stop) break;
 
@@ -169,11 +182,12 @@ void Worker::Run() {
         bool doDownload = m_downloadRequested.exchange(false);
         bool doScan = m_scanRequested.exchange(false);
         bool doInventory = m_inventoryRequested.exchange(false);
+        bool doMaterials = m_materialsRequested.exchange(false);
         std::wstring invIdentity;
         if (doInventory) invIdentity = m_inventoryIdentity;   // copied while m_cvMutex is still held
 
         // Regular poll interval always refreshes prices (and, with it, my orders)
-        if (!doPrice && !doPnl && !doOrders && !doCrafting && !doDownload && !doScan && !doInventory)
+        if (!doPrice && !doPnl && !doOrders && !doCrafting && !doDownload && !doScan && !doInventory && !doMaterials)
             doPrice = true;
 
         lock.unlock();
@@ -185,6 +199,7 @@ void Worker::Run() {
         if (doDownload && !m_stop) DoRecipeDownload();
         if (doScan && !m_stop) DoScan();
         if (doInventory && !m_stop) DoInventory(invIdentity);
+        if (doMaterials && !m_stop) DoMaterials();
     }
 }
 
@@ -1212,5 +1227,134 @@ void Worker::DoInventory(const std::wstring& rawIdentity) {
     {
         std::lock_guard<std::mutex> lock(m_snapshotMutex);
         m_inventorySnapshot = std::move(snap);
+    }
+}
+
+void Worker::DoMaterials() {
+    if (!m_api->HasApiKey()) return;
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_materialSnapshot.scanning = true;
+    }
+
+    auto slots = m_api->GetMaterialStorage();
+    if (!m_api->IsLastRequestOk()) {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_materialSnapshot.scanning = false;
+        m_materialSnapshot.error = "Materyal deposu alinamadi — API key'de 'inventories' scope var mi?";
+        if (m_materialSnapshot.hasData) m_materialSnapshot.stale = true;
+        m_materialSnapshot.lastRefresh = std::chrono::steady_clock::now();
+        return;
+    }
+    if (m_stop) return;
+
+    if (slots.empty()) {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_materialSnapshot = MaterialSnapshot{};
+        m_materialSnapshot.hasData = true;
+        m_materialSnapshot.lastRefresh = std::chrono::steady_clock::now();
+        return;
+    }
+
+    // Filter: skip bound materials (can't sell on TP)
+    std::vector<int> itemIds;
+    itemIds.reserve(slots.size());
+    for (auto& s : slots) {
+        if (!s.binding.empty()) continue;
+        itemIds.push_back(s.itemId);
+    }
+
+    // Fetch prices in batches of 200
+    bool anyFailed = false;
+    std::map<int, PriceData> priceMap;
+    for (size_t i = 0; i < itemIds.size() && !m_stop; i += 200) {
+        size_t end = (std::min)(i + 200, itemIds.size());
+        std::vector<int> batch(itemIds.begin() + i, itemIds.begin() + end);
+        auto prices = m_api->GetPrices(batch);
+        if (!m_api->IsLastRequestOk()) anyFailed = true;
+        for (auto& pd : prices) priceMap[pd.itemId] = pd;
+    }
+    if (m_stop) return;
+
+    // Carry-forward: if every price batch failed, keep previous snapshot
+    if (priceMap.empty() && anyFailed) {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_materialSnapshot.scanning = false;
+        m_materialSnapshot.error = "Fiyatlar alinamadi — API rate limit olabilir, tekrar dene";
+        if (m_materialSnapshot.hasData) m_materialSnapshot.stale = true;
+        m_materialSnapshot.lastRefresh = std::chrono::steady_clock::now();
+        return;
+    }
+
+    // Build entries for items that have any TP price
+    std::vector<MaterialEntry> entries;
+    for (auto& s : slots) {
+        if (!s.binding.empty()) continue;
+        auto it = priceMap.find(s.itemId);
+        if (it == priceMap.end()) continue;
+        if (it->second.buyPrice <= 0 && it->second.sellPrice <= 0) continue;
+        MaterialEntry me;
+        me.itemId = s.itemId;
+        me.count = s.count;
+        me.buyPrice = it->second.buyPrice;
+        me.sellPrice = it->second.sellPrice;
+        me.dumpNet = me.buyPrice > 0 ? ProfitEngine::NetRevenue(me.buyPrice) : 0;
+        me.listNet = me.sellPrice > 1 ? ProfitEngine::NetRevenue(me.sellPrice - 1) : 0;
+        me.totalDump = me.count * me.dumpNet;
+        me.totalList = me.count * me.listNet;
+        entries.push_back(me);
+    }
+
+    std::sort(entries.begin(), entries.end(),
+        [](const MaterialEntry& a, const MaterialEntry& b) { return a.totalDump > b.totalDump; });
+
+    // Resolve names for all entries (material IDs are static, m_nameCache makes repeats free)
+    {
+        std::vector<int> nameIds;
+        for (auto& e : entries) {
+            auto it = m_nameCache.find(e.itemId);
+            if (it != m_nameCache.end())
+                e.name = it->second;
+            else
+                nameIds.push_back(e.itemId);
+        }
+        if (!nameIds.empty() && !m_stop) {
+            for (size_t i = 0; i < nameIds.size() && !m_stop; i += 200) {
+                size_t end = (std::min)(i + 200, nameIds.size());
+                std::vector<int> batch(nameIds.begin() + i, nameIds.begin() + end);
+                auto infos = m_api->GetItems(batch);
+                for (auto& ii : infos) m_nameCache[ii.id] = ii.name;
+            }
+            for (auto& e : entries) {
+                if (e.name.empty()) {
+                    auto it = m_nameCache.find(e.itemId);
+                    if (it != m_nameCache.end()) e.name = it->second;
+                    else e.name = "#" + std::to_string(e.itemId);
+                }
+            }
+        }
+    }
+    if (m_stop) return;
+
+    int grandDump = 0, grandList = 0;
+    for (auto& e : entries) {
+        grandDump += e.totalDump;
+        grandList += e.totalList;
+    }
+
+    MaterialSnapshot snap;
+    snap.entries = std::move(entries);
+    snap.lastRefresh = std::chrono::steady_clock::now();
+    snap.grandTotalDump = grandDump;
+    snap.grandTotalList = grandList;
+    snap.totalMaterials = static_cast<int>(snap.entries.size());
+    snap.hasData = true;
+    snap.stale = anyFailed;
+    snap.scanning = false;
+
+    {
+        std::lock_guard<std::mutex> lock(m_snapshotMutex);
+        m_materialSnapshot = std::move(snap);
     }
 }

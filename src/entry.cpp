@@ -53,7 +53,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Name = "TP Assistant";
     AddonDef.Version.Major = 0;
     AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 8;
+    AddonDef.Version.Build = 9;
     AddonDef.Version.Revision = 0;
     AddonDef.Author = "Onur";
     AddonDef.Description = "Trading Post flipping + crafting karar destek araci";
@@ -116,7 +116,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromURL("ICON_TPASSISTANT_HOVER",
         "https://wiki.guildwars2.com", "/images/7/79/Black_Lion_Trading_Company_%28map_icon%29.png", nullptr);
 
-    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.8 loaded.");
+    APIDefs->Log(LOGL_INFO, "TP Assistant", "TP Assistant v0.9.9 loaded.");
 }
 
 void AddonUnload() {
@@ -1755,6 +1755,150 @@ void AddonRender() {
                 ImGui::EndTabItem();
             }
 
+            // === Depo (Material Storage Value Ranking) Tab ===
+            if (ImGui::BeginTabItem("Depo")) {
+                const ImVec4 green(0.2f, 0.9f, 0.3f, 1.0f), red(0.9f, 0.3f, 0.2f, 1.0f);
+
+                if (!g_api->HasApiKey()) {
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f),
+                        "API Key gerekli — Nexus ayarlarindan gir");
+                } else {
+                    auto matSnap = g_worker->GetMaterialSnapshot();
+
+                    if (matSnap.scanning) {
+                        ImGui::TextDisabled("Taraniyor...");
+                    } else if (ImGui::Button("Tara##mat")) {
+                        g_worker->RequestMaterials();
+                    }
+
+                    if (matSnap.hasData) {
+                        auto now = std::chrono::steady_clock::now();
+                        long long age = std::chrono::duration_cast<std::chrono::seconds>(now - matSnap.lastRefresh).count();
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("Son tarama: %lld sn once | %d materyal", age, matSnap.totalMaterials);
+                    }
+                    if (matSnap.stale) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "(bazi fiyatlar eksik)");
+                    }
+                    if (!matSnap.error.empty())
+                        ImGui::TextColored(red, "%s", matSnap.error.c_str());
+
+                    if (matSnap.hasData && !matSnap.entries.empty()) {
+                        ImGui::Text("Depo toplam:  Dump %s  |  Liste %s",
+                            ProfitEngine::FormatCopper(matSnap.grandTotalDump).c_str(),
+                            ProfitEngine::FormatCopper(matSnap.grandTotalList).c_str());
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Dump = alis emirlerine sat (garanti)\nListe = en dusuk -1c listele (garanti degil)");
+                        ImGui::Separator();
+
+                        static int matShowCount = 10;
+                        ImGui::SetNextItemWidth(80);
+                        ImGui::SliderInt("Goster", &matShowCount, 5, 50);
+
+                        if (ImGui::BeginTable("##matstore", 7,
+                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable |
+                                ImGuiTableFlags_SizingStretchProp)) {
+                            ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_NoSort, 3.0f);
+                            ImGui::TableSetupColumn("Adet", ImGuiTableColumnFlags_PreferSortDescending, 0.7f);
+                            ImGui::TableSetupColumn("Birim Alis", ImGuiTableColumnFlags_NoSort, 1.0f);
+                            ImGui::TableSetupColumn("Birim Liste", ImGuiTableColumnFlags_NoSort, 1.0f);
+                            ImGui::TableSetupColumn("Dump Toplam", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_DefaultSort, 1.3f);
+                            ImGui::TableSetupColumn("Liste Toplam", ImGuiTableColumnFlags_PreferSortDescending, 1.3f);
+                            ImGui::TableSetupColumn("Fark", ImGuiTableColumnFlags_NoSort, 0.9f);
+                            ImGui::TableHeadersRow();
+
+                            // Copy + sort
+                            auto sorted = matSnap.entries;
+                            if (auto* specs = ImGui::TableGetSortSpecs()) {
+                                if (specs->SpecsCount > 0) {
+                                    int col = specs->Specs[0].ColumnIndex;
+                                    bool asc = specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
+                                    std::stable_sort(sorted.begin(), sorted.end(),
+                                        [col, asc](const Worker::MaterialEntry& a, const Worker::MaterialEntry& b) {
+                                            int va = 0, vb = 0;
+                                            switch (col) {
+                                                case 1: va = a.count; vb = b.count; break;
+                                                case 4: va = a.totalDump; vb = b.totalDump; break;
+                                                case 5: va = a.totalList; vb = b.totalList; break;
+                                                default: va = a.totalDump; vb = b.totalDump; break;
+                                            }
+                                            return asc ? va < vb : va > vb;
+                                        });
+                                    specs->SpecsDirty = false;
+                                }
+                            }
+
+                            int shown = 0;
+                            for (auto& e : sorted) {
+                                if (shown >= matShowCount) break;
+                                shown++;
+
+                                ImGui::TableNextRow();
+                                ImGui::PushID(e.itemId);
+
+                                ImGui::TableNextColumn();
+                                CopyableName(e.name.empty() ? ("#" + std::to_string(e.itemId)) : e.name,
+                                    ImGui::GetStyleColorVec4(ImGuiCol_Text));
+
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%d", e.count);
+
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(e.buyPrice).c_str());
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("En iyi alis emri: %s\nNet (dump): %s",
+                                        ProfitEngine::FormatCopper(e.buyPrice).c_str(),
+                                        ProfitEngine::FormatCopper(e.dumpNet).c_str());
+
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(e.sellPrice).c_str());
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("En dusuk satis listesi: %s\nNet (liste -1c): %s",
+                                        ProfitEngine::FormatCopper(e.sellPrice).c_str(),
+                                        ProfitEngine::FormatCopper(e.listNet).c_str());
+
+                                ImGui::TableNextColumn();
+                                ImGui::TextColored(green, "%s", ProfitEngine::FormatCopper(e.totalDump).c_str());
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("%d x %s = %s\nAlis emirlerine sat (garanti)",
+                                        e.count, ProfitEngine::FormatCopper(e.dumpNet).c_str(),
+                                        ProfitEngine::FormatCopper(e.totalDump).c_str());
+
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%s", ProfitEngine::FormatCopper(e.totalList).c_str());
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("%d x %s = %s\nEn dusuk -1c listele (garanti degil)",
+                                        e.count, ProfitEngine::FormatCopper(e.listNet).c_str(),
+                                        ProfitEngine::FormatCopper(e.totalList).c_str());
+
+                                ImGui::TableNextColumn();
+                                int spread = e.listNet - e.dumpNet;
+                                if (spread > 0)
+                                    ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1.0f),
+                                        "+%s", ProfitEngine::FormatCopper(spread).c_str());
+                                else
+                                    ImGui::TextDisabled("0");
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Listeleme vs dump fark: birim basina +%s\n"
+                                                      "Toplam fark: %s\n"
+                                                      "Listelerken beklemen gerekir.",
+                                        ProfitEngine::FormatCopper(spread > 0 ? spread : 0).c_str(),
+                                        ProfitEngine::FormatCopper(e.totalList - e.totalDump).c_str());
+
+                                ImGui::PopID();
+                            }
+                            ImGui::EndTable();
+                        }
+                    } else if (!matSnap.hasData && !matSnap.scanning) {
+                        ImGui::TextDisabled("Taramak icin 'Tara' butonuna basin.");
+                        ImGui::TextDisabled("API key'de 'inventories' scope gerekli.");
+                    }
+                }
+                ImGui::EndTabItem();
+            }
+
             ImGui::EndTabBar();
         }
     }
@@ -1763,7 +1907,7 @@ void AddonRender() {
 
 void AddonOptions() {
     ImGui::Separator();
-    ImGui::Text("TP Assistant v0.9.8");
+    ImGui::Text("TP Assistant v0.9.9");
     ImGui::Checkbox("Pencereyi goster", &g_showWindow);
 
     static char apiKeyBuf[128] = "";

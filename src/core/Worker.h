@@ -182,6 +182,32 @@ public:
     // rawIdentity: MumbleLink Identity buffer copied verbatim (UTF-16 JSON); decoded and parsed on the worker.
     void RequestInventory(const std::wstring& rawIdentity = L"");
 
+    // Material storage value ranking
+    struct MaterialEntry {
+        int itemId = 0;
+        std::string name;
+        int count = 0;
+        int buyPrice = 0;      // best buy order per unit
+        int sellPrice = 0;     // lowest sell listing per unit
+        int dumpNet = 0;       // NetRevenue(buyPrice) per unit
+        int listNet = 0;       // NetRevenue(sellPrice-1) per unit
+        int totalDump = 0;     // count * dumpNet
+        int totalList = 0;     // count * listNet
+    };
+    struct MaterialSnapshot {
+        std::vector<MaterialEntry> entries;  // sorted by totalDump descending
+        std::chrono::steady_clock::time_point lastRefresh;
+        int grandTotalDump = 0;
+        int grandTotalList = 0;
+        int totalMaterials = 0;   // materials with count>0 and a TP price
+        bool hasData = false;
+        bool stale = false;
+        bool scanning = false;
+        std::string error;
+    };
+    MaterialSnapshot GetMaterialSnapshot() const;
+    void RequestMaterials();
+
     std::vector<AlertMsg> DrainAlerts();
 
     void SetAlertCallback(AlertCallback cb) { m_alertCb = cb; }
@@ -199,6 +225,7 @@ private:
     void DoRecipeDownload();
     void DoScan();
     void DoInventory(const std::wstring& rawIdentity);
+    void DoMaterials();
     void StampBook(ScanResult& sr, const std::vector<BookLevel>& buys, const std::vector<BookLevel>& sells);
     void ResolveNames(const std::vector<int>& ids);
 
@@ -257,6 +284,10 @@ private:
     InventorySnapshot m_inventorySnapshot;
     std::string m_inventoryLastChar;
     SalvageCalc::InventoryFingerprint m_inventoryLastFp;
+
+    // Material storage
+    MaterialSnapshot m_materialSnapshot;
+    std::atomic<bool> m_materialsRequested{false};
 
     // Scan output IDs whose volume we track alongside the watchlist. Worker-thread only.
     std::vector<int> m_scanVolumeIds;
