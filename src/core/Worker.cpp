@@ -1230,7 +1230,7 @@ void Worker::DoInventory(const std::wstring& rawIdentity) {
     }
 }
 
-// GW2 crafting material tier classification (IDs stable since 2012 launch)
+// GW2 crafting material tier classification (IDs verified against /v2/items, 16 Sep 2026)
 static int GetMaterialTier(int id) {
     switch (id) {
         // Metal: ore + ingot
@@ -1262,19 +1262,29 @@ static int GetMaterialTier(int id) {
         case 19724: case 19711: return 4;  // Hard
         case 19722: case 19709: return 5;  // Elder
         case 19725: case 19712: return 6;  // Ancient
+        // Bones (non-sequential: T5=24341, T6=24358)
+        case 24342: return 1;  // Bone Chip
+        case 24343: return 2;  // Bone Shard
+        case 24344: return 3;  // Bone
+        case 24345: return 4;  // Heavy Bone
+        case 24341: return 5;  // Large Bone
+        case 24358: return 6;  // Ancient Bone
+        // Totems (5-item family, Elaborate = T6 in recipes)
+        case 24296: return 1;  // Tiny Totem
+        case 24297: return 2;  // Small Totem
+        case 24298: return 3;  // Totem
+        case 24299: return 4;  // Intricate Totem
+        case 24300: return 6;  // Elaborate Totem
     }
-    // Fine: Dust T1-T6 (sequential)
-    if (id >= 24276 && id <= 24281) return id - 24275;
-    // Fine: Blood T1-T6
-    if (id >= 24290 && id <= 24295) return id - 24289;
-    // Fine: Totems T1-T6
-    if (id >= 24296 && id <= 24301) return id - 24295;
-    // Fine: Bones T1-T6
-    if (id >= 24340 && id <= 24345) return id - 24339;
-    // Fine: Claws T1-T6
-    if (id >= 24347 && id <= 24352) return id - 24346;
-    // Fine: Fangs T1-T6
-    if (id >= 24354 && id <= 24359) return id - 24353;
+    // Fine sequential families (verified /v2/items):
+    // Dust 24272-24277, Venom 24278-24283, Scale 24284-24289, Blood 24290-24295
+    if (id >= 24272 && id <= 24277) return id - 24271;  // Dust T1-T6
+    if (id >= 24278 && id <= 24283) return id - 24277;  // Venom Sac T1-T6
+    if (id >= 24284 && id <= 24289) return id - 24283;  // Scale T1-T6
+    if (id >= 24290 && id <= 24295) return id - 24289;  // Blood T1-T6
+    // Claws 24346-24351, Fangs 24352-24357
+    if (id >= 24346 && id <= 24351) return id - 24345;  // Claw T1-T6
+    if (id >= 24352 && id <= 24357) return id - 24351;  // Fang T1-T6
     return 0;
 }
 

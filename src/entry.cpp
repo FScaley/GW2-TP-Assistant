@@ -24,8 +24,8 @@ void AddonOptions();
 
 static constexpr int VER_MAJOR = 0;
 static constexpr int VER_MINOR = 10;
-static constexpr int VER_BUILD = 1;
-#define VER_STR "0.10.1"
+static constexpr int VER_BUILD = 2;
+#define VER_STR "0.10.2"
 
 AddonDefinition_t AddonDef = {};
 HMODULE hSelf = nullptr;
@@ -1801,12 +1801,18 @@ void AddonRender() {
                         ImGui::SetNextItemWidth(80);
                         ImGui::SliderInt("Goster", &matShowCount, 5, 50);
 
-                        // Tier filter
-                        static bool tierFilter[7] = { true, true, true, true, true, true, true }; // [0]=hepsi/diger, [1-6]=T1-T6
+                        // Tier filter — Hepsi acts as select/deselect all
+                        static bool tierFilter[7] = { true, true, true, true, true, true, true }; // [0]=diger, [1-6]=T1-T6
+                        static bool prevAll = true;
+                        bool allChecked = tierFilter[0];
+                        for (int t = 1; t <= 6; t++) allChecked = allChecked && tierFilter[t];
+                        bool selectAll = allChecked;
                         ImGui::SameLine();
                         ImGui::TextDisabled("|");
                         ImGui::SameLine();
-                        ImGui::Checkbox("Hepsi##tf", &tierFilter[0]);
+                        if (ImGui::Checkbox("Hepsi##tf", &selectAll)) {
+                            for (int t = 0; t <= 6; t++) tierFilter[t] = selectAll;
+                        }
                         for (int t = 1; t <= 6; t++) {
                             ImGui::SameLine();
                             char label[16];
